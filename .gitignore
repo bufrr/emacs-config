@@ -1,0 +1,45 @@
+# Doom Emacs generated files
+.local/
+.lsp/
+.dap/
+.cache/
+.elc
+*~
+\#*\#
+*.elc
+auto-save-list
+tramp
+*.log
+.org-id-locations
+*_archive
+*_flymake.*
+/eshell/history
+/eshell/lastdir
+/elpa/
+*.rel
+/auto/
+.cask/
+dist/
+flycheck_*.el
+/server/
+.projectile
+.dir-locals.el
+/network-security.data
+.DS_Store
+
+# Personal files that shouldn't be shared
+custom.el
+/org/
+/blog/
+
+# Temporary files
+*.tmp
+*.temp
+.#*
+
+# Backup files
+*.bak
+*~
+
+# LSP
+.lsp-session-*
