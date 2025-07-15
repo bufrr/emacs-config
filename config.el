@@ -145,7 +145,11 @@
       :desc "Agenda" "g a" #'org-agenda
       :desc "Archive done" "g A" #'org-archive-subtree
       :desc "View current work" "g w" (lambda () (interactive) (find-file org-current-file))
-      :desc "View archive" "g v" (lambda () (interactive) (find-file org-archive-file)))
+      :desc "View archive" "g v" (lambda () (interactive) (find-file org-archive-file))
+      :desc "Insert checkbox" "g b" (lambda () (interactive) 
+                                       (beginning-of-line)
+                                       (insert "- [ ] ")
+                                       (end-of-line)))
 
 ;; Org-publish configuration for blog
 (after! org

@@ -31,6 +31,7 @@ This is my personal Doom Emacs configuration with a focus on GTD (Getting Things
 | `SPC g A` | Archive completed subtree |
 | `SPC g w` | Open current work file |
 | `SPC g v` | View archive |
+| `SPC g b` | Insert checkbox |
 
 ### Blog Keybindings
 
