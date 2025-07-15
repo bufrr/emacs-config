@@ -43,9 +43,8 @@
 (setq org-directory "~/org/")
 
 ;; GTD Configuration (Simple 2-file system)
-(setq org-gtd-directory "~/org/gtd/")
-(setq org-current-file (concat org-gtd-directory "current.org"))
-(setq org-archive-file (concat org-gtd-directory "archive.org"))
+(setq org-current-file "~/org/gtd/current.org")
+(setq org-archive-file "~/org/gtd/archive.org")
 
 ;; Blog configuration
 (setq blog-directory "~/blog/")
@@ -146,124 +145,61 @@
       :desc "Archive done" "g A" #'org-archive-subtree
       :desc "View current work" "g w" (lambda () (interactive) (find-file org-current-file))
       :desc "View archive" "g v" (lambda () (interactive) (find-file org-archive-file))
-      :desc "Insert checkbox" "g b" (lambda () (interactive) 
-                                       (beginning-of-line)
-                                       (insert "- [ ] ")
-                                       (end-of-line)))
+      :desc "Insert checkbox" "g b" (lambda () (interactive)
+                                      (end-of-line)
+                                      (newline-and-indent)
+                                      (insert "- [ ] ")))
 
 ;; Org-publish configuration for blog
 (after! org
   (require 'ox-publish)
-  
+
   ;; GTD Settings (Simple 2-file system)
   (setq org-todo-keywords
         '((sequence "TODO(t)" "PROJ(p)" "|" "DONE(d)" "CANCELLED(c)")))
-  
+
   ;; Agenda files - only current work
   (setq org-agenda-files (list org-current-file))
-  
+
   ;; Archive location
   (setq org-archive-location (concat org-archive-file "::* Archived %s"))
   
-  ;; Enable statistics cookies [/] and [%]
-  (setq org-hierarchical-todo-statistics t)
-  (setq org-checkbox-hierarchical-statistics t)
+  ;; Automatically add CLOSED timestamp when marking as DONE
+  (setq org-log-done 'time)
   
-  ;; Update statistics cookies when TODO state changes
-  (add-hook 'org-after-todo-state-change-hook 'org-update-statistics-cookies)
+  ;; Enable recursive counting for statistics cookies
+  (setq org-hierarchical-todo-statistics nil)
   
-  ;; Auto-update parent TODO when all checkboxes are done/undone
-  (defun gtd/update-todo-from-checkboxes ()
-    "Update TODO state based on checkbox completion."
-    (when (eq major-mode 'org-mode)
-      (save-excursion
-        (org-back-to-heading t)
-        (let* ((beg (point))
-               (end (save-excursion (org-end-of-subtree t) (point)))
-               (total 0)
-               (done 0))
-          ;; Count checkboxes
-          (goto-char beg)
-          (while (re-search-forward "\\[\\([X ]\\)\\]" end t)
-            (setq total (1+ total))
-            (when (string= (match-string 1) "X")
-              (setq done (1+ done))))
-          ;; Update TODO state
-          (goto-char beg)
-          (when (and (> total 0)
-                     (org-at-heading-p))
-            (cond
-             ;; All done -> mark as DONE
-             ((= done total)
-              (when (member (org-get-todo-state) '("TODO" "PROJ"))
-                (org-todo "DONE")))
-             ;; None done -> mark as TODO
-             ((= done 0)
-              (when (member (org-get-todo-state) '("DONE"))
-                (org-todo "TODO")))
-             ;; Some done -> ensure TODO/PROJ
-             (t
-              (when (member (org-get-todo-state) '("DONE"))
-                (org-todo "TODO")))))))))
+  ;; Auto-complete parent TODO when all children are done
+  (defun org-summary-todo (n-done n-not-done)
+    "Switch entry to DONE when all subentries are done, to TODO otherwise."
+    (let (org-log-done org-todo-log-states)
+      (org-todo (if (= n-not-done 0) "DONE" "TODO"))))
   
-  ;; Hook it to checkbox toggle
-  (add-hook 'org-checkbox-statistics-hook 'gtd/update-todo-from-checkboxes)
+  (add-hook 'org-after-todo-statistics-hook #'org-summary-todo)
+
+  ;; Optional: Update checkbox count and TODO state when toggling checkboxes
+  (defun my/org-checkbox-todo ()
+    "Update TODO state when checkbox count changes."
+    (save-excursion
+      (org-back-to-heading t)
+      (when-let ((todo-state (org-get-todo-state)))
+        (org-update-checkbox-count t))))
   
-  ;; Auto-update parent TODO/PROJ when all subtasks are done/undone
-  (defun gtd/update-parent-todo ()
-    "Update parent TODO state based on subtask completion."
-    (when (eq major-mode 'org-mode)
-      (save-excursion
-        (ignore-errors
-          (org-back-to-heading t)
-          (let ((parent-state (org-get-todo-state)))
-            (when parent-state
-              ;; Check if we have TODO subtasks
-              (let ((has-todos nil)
-                    (all-done t)
-                    (has-done nil))
-                (org-map-entries
-                 (lambda ()
-                   (let ((state (org-get-todo-state)))
-                     (when state
-                       (setq has-todos t)
-                       (if (member state '("DONE" "CANCELLED"))
-                           (setq has-done t)
-                         (setq all-done nil)))))
-                 nil 'tree)
-                ;; Update parent state based on children
-                (when has-todos
-                  (cond
-                   ;; All subtasks done -> mark parent as DONE
-                   ((and all-done (member parent-state '("TODO" "PROJ")))
-                    (org-todo "DONE"))
-                   ;; No subtasks done -> ensure parent is TODO/PROJ
-                   ((and (not has-done) (member parent-state '("DONE")))
-                    (org-todo (if (string-match "\\[.*/.*\\]" (org-get-heading)) "PROJ" "TODO")))
-                   ;; Some done -> ensure parent is not DONE
-                   ((and (not all-done) (member parent-state '("DONE")))
-                    (org-todo (if (string-match "\\[.*/.*\\]" (org-get-heading)) "PROJ" "TODO")))))))))))
-  
-  ;; Update parent when child TODO state changes
-  (add-hook 'org-after-todo-state-change-hook
-            (lambda ()
-              (save-excursion
-                (ignore-errors
-                  (org-up-heading-safe)
-                  (gtd/update-parent-todo)))))
-  
+  (add-hook 'org-checkbox-statistics-hook #'my/org-checkbox-todo)
+
   ;; Refile targets - can refile within current file
   (setq org-refile-targets '((org-current-file :maxlevel . 3)))
-  
+
   ;; Simple capture templates
   (setq org-capture-templates
         '(("t" "Task" entry (file+headline org-current-file "Tasks")
            "** TODO %?\n   %U" :empty-lines 1)
           ("p" "Project" entry (file+headline org-current-file "Projects")
-           "** PROJ %? [/]\n   :PROPERTIES:\n   :COOKIE_DATA: todo recursive\n   :END:\n   %U\n*** TODO " :empty-lines 1)
+           "** PROJ %? [%]\n   :PROPERTIES:\n   :COOKIE_DATA: todo recursive\n   :END:\n   %U\n*** TODO " :empty-lines 1)
           ("i" "Idea" entry (file+headline org-current-file "Ideas")
            "** %?\n   %U" :empty-lines 1)))
-  
+
   ;; Custom HTML preamble and postamble
   (defun blog/preamble (info)
     (concat
@@ -276,7 +212,7 @@
      "</nav>"
      "</div>"
      "</header>"))
-  
+
   (defun blog/postamble (info)
     (concat
      "<footer class=\"site-footer\">"
@@ -284,7 +220,7 @@
      "<p>&copy; " (format-time-string "%Y") " - Built with Emacs & Org-mode</p>"
      "</div>"
      "</footer>"))
-  
+
   ;; Custom sitemap function to exclude author
   (defun blog/sitemap-function (title list)
     "Generate sitemap as an Org file without author metadata."
@@ -292,7 +228,7 @@
             "#+AUTHOR:\n"
             "#+OPTIONS: author:nil toc:nil num:nil\n\n"
             (org-list-to-org list)))
-  
+
   ;; Custom function to generate article metadata
   (defun blog/article-meta (info)
     (let* ((author (org-export-data (plist-get info :author) info))
@@ -314,7 +250,7 @@
                             tags " ")
                  "</div>"))
        "</div>")))
-  
+
   ;; Publishing configuration
   (setq org-publish-project-alist
         `(("blog-posts"
@@ -347,12 +283,12 @@
                                            entry
                                            (org-publish-find-title entry project)))
            :sitemap-function blog/sitemap-function)
-          
+
           ("blog-static"
            :base-directory ,blog-static-directory
            :base-extension "css\\|js\\|png\\|jpg\\|gif\\|pdf\\|mp3\\|ogg\\|swf\\|svg\\|woff\\|woff2\\|ico"
            :publishing-directory ,(concat blog-publish-directory "static/")
            :recursive t
            :publishing-function org-publish-attachment)
-          
+
           ("blog" :components ("blog-posts" "blog-static")))))
