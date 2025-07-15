@@ -42,11 +42,10 @@
 ;; change `org-directory'. It must be set before org loads!
 (setq org-directory "~/org/")
 
-;; GTD Configuration
+;; GTD Configuration (Simple 2-file system)
 (setq org-gtd-directory "~/org/gtd/")
-(setq org-inbox-file (concat org-gtd-directory "inbox.org"))
-(setq org-gtd-file (concat org-gtd-directory "gtd.org"))
-(setq org-calendar-file (concat org-gtd-directory "calendar.org"))
+(setq org-current-file (concat org-gtd-directory "current.org"))
+(setq org-archive-file (concat org-gtd-directory "archive.org"))
 
 ;; Blog configuration
 (setq blog-directory "~/blog/")
@@ -142,213 +141,44 @@
       :desc "Publish blog" "B p" #'blog/publish
       
       ;; GTD Keybindings
-      :desc "GTD Inbox" "g i" (lambda () (interactive) (find-file org-inbox-file))
-      :desc "GTD Main" "g g" (lambda () (interactive) (find-file org-gtd-file))
-      :desc "GTD Calendar" "g c" (lambda () (interactive) (find-file org-calendar-file))
-      :desc "GTD Review" "g r" (lambda () (interactive) (org-agenda nil "g"))
-      :desc "GTD Next Actions" "g n" (lambda () (interactive) (org-agenda nil "n"))
-      :desc "GTD Projects" "g p" (lambda () (interactive) (org-agenda nil "p"))
-      :desc "GTD Weekly Review" "g w" (lambda () (interactive) (org-agenda nil "w"))
-      :desc "GTD Capture" "g x" #'org-capture
-      :desc "Process Inbox" "g I" #'gtd/process-inbox
-      :desc "Archive Done" "g a" #'gtd/archive-done-tasks
-      :desc "Find Stale Projects" "g s" #'gtd/find-stale-projects)
+      :desc "Capture" "g c" #'org-capture
+      :desc "Agenda" "g a" #'org-agenda
+      :desc "Archive done" "g A" #'org-archive-subtree
+      :desc "View current work" "g w" (lambda () (interactive) (find-file org-current-file))
+      :desc "View archive" "g v" (lambda () (interactive) (find-file org-archive-file)))
 
 ;; Org-publish configuration for blog
 (after! org
   (require 'ox-publish)
   
-  ;; GTD Settings
+  ;; GTD Settings (Simple 2-file system)
   (setq org-todo-keywords
-        '((sequence "TODO(t)" "NEXT(n)" "WAITING(w@)" "SOMEDAY(s)" "|" "DONE(d!)" "CANCELLED(c@)")))
+        '((sequence "TODO(t)" "PROJ(p)" "|" "DONE(d)" "CANCELLED(c)")))
   
-  (setq org-todo-keyword-faces
-        '(("TODO" . (:foreground "#fb4934" :weight bold))
-          ("NEXT" . (:foreground "#fabd2f" :weight bold))
-          ("WAITING" . (:foreground "#fe8019" :weight bold))
-          ("SOMEDAY" . (:foreground "#83a598" :weight bold))
-          ("DONE" . (:foreground "#8ec07c" :weight bold))
-          ("CANCELLED" . (:foreground "#928374" :weight bold))))
-  
-  ;; Agenda files
-  (setq org-agenda-files (list org-inbox-file
-                               org-gtd-file
-                               org-calendar-file))
-  
-  ;; Refile targets
-  (setq org-refile-targets '((org-gtd-file :maxlevel . 2)
-                             (org-calendar-file :maxlevel . 1)
-                             (org-inbox-file :maxlevel . 1)))
+  ;; Agenda files - only current work
+  (setq org-agenda-files (list org-current-file))
   
   ;; Archive location
-  (setq org-archive-location (concat org-gtd-directory "archive.org::* Archived Tasks"))
+  (setq org-archive-location (concat org-archive-file "::* Archived %s"))
   
-  ;; Tags for contexts
-  (setq org-tag-alist '((:startgroup)
-                        ("@home" . ?h)
-                        ("@work" . ?w)
-                        ("@computer" . ?c)
-                        ("@phone" . ?p)
-                        ("@errands" . ?e)
-                        (:endgroup)
-                        ("URGENT" . ?u)
-                        ("PROJECT" . ?P)
-                        (:startgroup)
-                        ("Energy")
-                        ("High" . ?H)
-                        ("Medium" . ?M)
-                        ("Low" . ?L)
-                        (:endgroup)))
+  ;; Enable statistics cookies [/] and [%]
+  (setq org-hierarchical-todo-statistics t)
+  (setq org-checkbox-hierarchical-statistics t)
   
-  ;; Effort estimates
-  (setq org-global-properties
-        '(("Effort_ALL" . "0:05 0:15 0:30 1:00 2:00 4:00 8:00")))
+  ;; Update statistics cookies when TODO state changes
+  (add-hook 'org-after-todo-state-change-hook 'org-update-statistics-cookies)
   
-  ;; Capture templates for GTD
+  ;; Refile targets - can refile within current file
+  (setq org-refile-targets '((org-current-file :maxlevel . 3)))
+  
+  ;; Simple capture templates
   (setq org-capture-templates
-        '(("i" "Inbox" entry (file org-inbox-file)
-           "* TODO %?\n  %U\n  %a" :empty-lines 1)
-          
-          ("t" "Task" entry (file+headline org-gtd-file "Next Actions")
-           "* TODO %? %^g\n  %U\n  %a" :empty-lines 1)
-          
-          ("p" "Project" entry (file+headline org-gtd-file "Projects")
-           "* TODO %? [/] :PROJECT:\n  :PROPERTIES:\n  :CREATED: %U\n  :LAST_REVIEWED: %U\n  :END:\n  %a\n** TODO Define project outcome\n** TODO Identify project milestones\n** TODO List next actions\n" :empty-lines 1)
-          
-          ("w" "Waiting For" entry (file+headline org-gtd-file "Waiting For")
-           "* WAITING %? :@waiting:\n  %U\n  From: %^{Who}\n  %a" :empty-lines 1)
-          
-          ("s" "Someday/Maybe" entry (file+headline org-gtd-file "Someday/Maybe")
-           "* SOMEDAY %?\n  %U\n  %a" :empty-lines 1)
-          
-          ("c" "Calendar" entry (file+headline org-calendar-file "Appointments & Scheduled Items")
-           "* %?\n  SCHEDULED: %^T\n  %U\n  %a" :empty-lines 1)
-          
-          ("r" "Reference" entry (file+headline org-gtd-file "Reference")
-           "* %?\n  %U\n  %a" :empty-lines 1)))
-  
-  ;; GTD Helper Functions
-  (defun gtd/process-inbox ()
-    "Interactively process items in the GTD inbox."
-    (interactive)
-    (find-file org-inbox-file)
-    (org-overview)
-    (org-show-subtree)
-    (goto-char (point-min))
-    (forward-line 3)
-    (while (not (eobp))
-      (when (looking-at "^\\*+ ")
-        (org-show-subtree)
-        (let* ((title (org-get-heading t t t t))
-               (choice (read-char-choice
-                        (format "Process: %s\n[n]ext action  [p]roject  [s]omeday  [c]alendar  [w]aiting  [r]eference  [d]elete  [q]uit: "
-                                title)
-                        '(?n ?p ?s ?c ?w ?r ?d ?q))))
-          (pcase choice
-            (?q (user-error "Quit processing"))
-            (?d (org-cut-subtree)
-                (message "Deleted: %s" title))
-            (?n (org-todo "NEXT")
-                (org-set-tags "@computer")
-                (org-refile nil nil (list "Next Actions" org-gtd-file nil nil)))
-            (?p (org-todo "TODO")
-                (org-set-tags "PROJECT")
-                (org-refile nil nil (list "Projects" org-gtd-file nil nil)))
-            (?s (org-todo "SOMEDAY")
-                (org-refile nil nil (list "Someday/Maybe" org-gtd-file nil nil)))
-            (?c (org-todo "TODO")
-                (call-interactively 'org-schedule)
-                (org-refile nil nil (list "Appointments & Scheduled Items" org-calendar-file nil nil)))
-            (?w (org-todo "WAITING")
-                (org-set-tags "@waiting")
-                (setq waiting-for (read-string "Waiting for whom? "))
-                (org-set-property "WAITING_FOR" waiting-for)
-                (org-refile nil nil (list "Waiting For" org-gtd-file nil nil)))
-            (?r (org-todo nil)
-                (org-refile nil nil (list "Reference" org-gtd-file nil nil))))))
-      (or (org-at-heading-p) (outline-next-heading)))
-    (when (y-or-n-p "Inbox processing complete! Archive empty inbox? ")
-      (write-region "" nil org-inbox-file)))
-  
-  (defun gtd/quick-capture ()
-    "Quick capture to inbox with minimal interruption."
-    (interactive)
-    (org-capture nil "i"))
-  
-  (defun gtd/archive-done-tasks ()
-    "Archive all DONE tasks older than 7 days."
-    (interactive)
-    (org-map-entries
-     (lambda ()
-       (let ((closed-time (org-entry-get nil "CLOSED")))
-         (when (and closed-time
-                    (> (- (float-time)
-                          (float-time (date-to-time closed-time)))
-                       (* 7 24 60 60)))
-           (org-archive-subtree))))
-     "/DONE" 'agenda))
-  
-  (defun gtd/find-stale-projects ()
-    "Find projects that haven't been reviewed in over 7 days."
-    (interactive)
-    (let ((stale-projects '()))
-      (org-map-entries
-       (lambda ()
-         (let* ((last-reviewed (org-entry-get nil "LAST_REVIEWED"))
-                (days-old (if last-reviewed
-                              (/ (- (float-time)
-                                    (float-time (date-to-time last-reviewed)))
-                                 (* 24 60 60))
-                            999)))
-           (when (> days-old 7)
-             (push (cons (org-get-heading t t t t) days-old) stale-projects))))
-       "PROJECT" 'agenda)
-      (if stale-projects
-          (with-current-buffer (get-buffer-create "*Stale Projects*")
-            (erase-buffer)
-            (insert "Projects needing review:\n\n")
-            (dolist (project stale-projects)
-              (insert (format "- %s (%.0f days old)\n" (car project) (cdr project))))
-            (display-buffer (current-buffer)))
-        (message "No stale projects found!"))))
-  
-  ;; Custom Agenda Views for GTD
-  (setq org-agenda-custom-commands
-        '(("g" "GTD Review"
-           ((agenda "" ((org-agenda-span 'week)
-                        (org-agenda-start-on-weekday nil)
-                        (org-agenda-prefix-format " %i %-12:c%?-12t% s")))
-            (todo "NEXT" ((org-agenda-overriding-header "Next Actions")
-                          (org-agenda-sorting-strategy '(priority-down effort-up category-keep))))
-            (todo "WAITING" ((org-agenda-overriding-header "Waiting For")
-                             (org-agenda-sorting-strategy '(priority-down category-keep))))
-            (tags "INBOX" ((org-agenda-overriding-header "Inbox - Process these items")))
-            (todo "TODO" ((org-agenda-overriding-header "All TODOs")
-                          (org-agenda-sorting-strategy '(priority-down category-keep))))))
-          
-          ("n" "Next Actions by Context"
-           ((tags-todo "@home+NEXT" ((org-agenda-overriding-header "Next Actions - @home")))
-            (tags-todo "@work+NEXT" ((org-agenda-overriding-header "Next Actions - @work")))
-            (tags-todo "@computer+NEXT" ((org-agenda-overriding-header "Next Actions - @computer")))
-            (tags-todo "@phone+NEXT" ((org-agenda-overriding-header "Next Actions - @phone")))
-            (tags-todo "@errands+NEXT" ((org-agenda-overriding-header "Next Actions - @errands")))
-            (tags-todo "NEXT-@home-@work-@computer-@phone-@errands" 
-                       ((org-agenda-overriding-header "Next Actions - No Context")))))
-          
-          ("p" "Projects" tags "PROJECT" 
-           ((org-agenda-overriding-header "Active Projects")
-            (org-agenda-sorting-strategy '(priority-down category-keep))))
-          
-          ("w" "Weekly Review"
-           ((agenda "" ((org-agenda-span 'week)
-                        (org-agenda-start-on-weekday 1)
-                        (org-agenda-prefix-format " %i %-12:c%?-12t% s")))
-            (todo "DONE" ((org-agenda-overriding-header "Completed This Week")
-                          (org-agenda-show-log 'closed)
-                          (org-agenda-start-day "-7d")
-                          (org-agenda-sorting-strategy '(priority-down effort-up category-keep))))
-            (todo "SOMEDAY" ((org-agenda-overriding-header "Someday/Maybe - Review for activation")))
-            (stuck "" ((org-agenda-overriding-header "Stuck Projects")))))))
+        '(("t" "Task" entry (file+headline org-current-file "Tasks")
+           "** TODO %?\n   %U" :empty-lines 1)
+          ("p" "Project" entry (file+headline org-current-file "Projects")
+           "** PROJ %? [/]\n   :PROPERTIES:\n   :COOKIE_DATA: todo recursive\n   :END:\n   %U\n*** TODO " :empty-lines 1)
+          ("i" "Idea" entry (file+headline org-current-file "Ideas")
+           "** %?\n   %U" :empty-lines 1)))
   
   ;; Custom HTML preamble and postamble
   (defun blog/preamble (info)

@@ -4,12 +4,11 @@ This is my personal Doom Emacs configuration with a focus on GTD (Getting Things
 
 ## Features
 
-- 🚀 **GTD Implementation**: Complete Getting Things Done system with interactive inbox processing
+- 🚀 **Simple 2-File GTD**: Clean Getting Things Done system with current work + archive
+- 📊 **Progress Tracking**: Automatic progress indicators for projects and subtasks
 - 📝 **Blog System**: Full org-mode based static blog generator with custom themes
-- ⚡ **Optimized Keybindings**: Efficient shortcuts for common tasks
-- 🎯 **Context-based Organization**: Tasks organized by context (@home, @work, etc.)
-- 📅 **Weekly Review System**: Automated reminders and project tracking
-- 🔋 **Energy Management**: Tag tasks by energy level required
+- ⚡ **Smart Keybindings**: Minimal but powerful GTD shortcuts
+- ✨ **Hierarchical Tasks**: Full support for nested tasks with completion tracking
 
 ## Installation
 
@@ -27,14 +26,11 @@ This is my personal Doom Emacs configuration with a focus on GTD (Getting Things
 
 | Key | Description |
 |-----|-------------|
-| `SPC g x` | Quick capture |
-| `SPC g I` | Process inbox interactively |
-| `SPC g r` | GTD review dashboard |
-| `SPC g n` | Next actions by context |
-| `SPC g p` | Projects overview |
-| `SPC g w` | Weekly review |
-| `SPC g a` | Archive done tasks |
-| `SPC g s` | Find stale projects |
+| `SPC g c` | Capture new item (task/project/idea) |
+| `SPC g a` | View agenda |
+| `SPC g A` | Archive completed subtree |
+| `SPC g w` | Open current work file |
+| `SPC g v` | View archive |
 
 ### Blog Keybindings
 
@@ -52,12 +48,12 @@ This is my personal Doom Emacs configuration with a focus on GTD (Getting Things
 
 ## File Organization
 
-### GTD Files
-The GTD system creates these files in `~/org/gtd/`:
-- `inbox.org` - Capture destination
-- `gtd.org` - Main GTD file (Projects, Next Actions, etc.)
-- `calendar.org` - Scheduled appointments
-- `archive.org` - Archived completed tasks (auto-created)
+### GTD Files (2-File System)
+The GTD system uses just two files in `~/org/gtd/`:
+- `current.org` - All active work (projects, tasks, ideas)
+- `archive.org` - Completed and archived items
+- `README.md` - Complete GTD documentation
+- `quick-reference.org` - Quick key reference
 
 ### Blog Files
 The blog system uses this structure in `~/blog/`:
@@ -71,10 +67,10 @@ The blog system uses this structure in `~/blog/`:
 Feel free to modify the configuration to suit your needs. Key areas:
 
 ### GTD Customization
-- GTD contexts in `org-tag-alist`
-- Capture templates in `org-capture-templates`
-- Custom agenda views in `org-agenda-custom-commands`
-- Energy levels and effort estimates
+- Task states: TODO, PROJ (for projects), DONE, CANCELLED
+- Three capture templates: Task (t), Project (p), Idea (i)
+- Automatic progress tracking with [/] and [%] indicators
+- Archive location set to archive.org
 
 ### Blog Customization
 - Blog metadata in `blog-*` variables
@@ -84,11 +80,15 @@ Feel free to modify the configuration to suit your needs. Key areas:
 
 ## Usage Tips
 
-### GTD Workflow
-1. Capture everything with `SPC g x i`
-2. Process inbox daily with `SPC g I`
-3. Review projects weekly with `SPC g w`
-4. Archive old tasks with `SPC g a`
+### GTD Workflow (Simple 2-File System)
+1. **Capture**: `SPC g c` then choose template:
+   - `t` for tasks
+   - `p` for projects (with progress tracking)
+   - `i` for ideas
+2. **Work**: `SPC g w` to view current work file
+3. **Complete**: Mark items DONE with `C-c C-t d`
+4. **Archive**: `SPC g A` to move completed items to archive
+5. **Review**: `SPC g a` for agenda or `SPC g v` to see archived work
 
 ### Blog Workflow
 1. Create new post with `SPC B n`
