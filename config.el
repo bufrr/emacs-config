@@ -172,6 +172,43 @@
   ;; Update statistics cookies when TODO state changes
   (add-hook 'org-after-todo-state-change-hook 'org-update-statistics-cookies)
   
+  ;; Auto-update parent TODO when all checkboxes are done/undone
+  (defun gtd/update-todo-from-checkboxes ()
+    "Update TODO state based on checkbox completion."
+    (when (eq major-mode 'org-mode)
+      (save-excursion
+        (org-back-to-heading t)
+        (let* ((beg (point))
+               (end (save-excursion (org-end-of-subtree t) (point)))
+               (total 0)
+               (done 0))
+          ;; Count checkboxes
+          (goto-char beg)
+          (while (re-search-forward "\\[\\([X ]\\)\\]" end t)
+            (setq total (1+ total))
+            (when (string= (match-string 1) "X")
+              (setq done (1+ done))))
+          ;; Update TODO state
+          (goto-char beg)
+          (when (and (> total 0)
+                     (org-at-heading-p))
+            (cond
+             ;; All done -> mark as DONE
+             ((= done total)
+              (when (member (org-get-todo-state) '("TODO" "PROJ"))
+                (org-todo "DONE")))
+             ;; None done -> mark as TODO
+             ((= done 0)
+              (when (member (org-get-todo-state) '("DONE"))
+                (org-todo "TODO")))
+             ;; Some done -> ensure TODO/PROJ
+             (t
+              (when (member (org-get-todo-state) '("DONE"))
+                (org-todo "TODO")))))))))
+  
+  ;; Hook it to checkbox toggle
+  (add-hook 'org-checkbox-statistics-hook 'gtd/update-todo-from-checkboxes)
+  
   ;; Refile targets - can refile within current file
   (setq org-refile-targets '((org-current-file :maxlevel . 3)))
   
