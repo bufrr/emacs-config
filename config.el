@@ -209,6 +209,49 @@
   ;; Hook it to checkbox toggle
   (add-hook 'org-checkbox-statistics-hook 'gtd/update-todo-from-checkboxes)
   
+  ;; Auto-update parent TODO/PROJ when all subtasks are done/undone
+  (defun gtd/update-parent-todo ()
+    "Update parent TODO state based on subtask completion."
+    (when (eq major-mode 'org-mode)
+      (save-excursion
+        (ignore-errors
+          (org-back-to-heading t)
+          (let ((parent-state (org-get-todo-state)))
+            (when parent-state
+              ;; Check if we have TODO subtasks
+              (let ((has-todos nil)
+                    (all-done t)
+                    (has-done nil))
+                (org-map-entries
+                 (lambda ()
+                   (let ((state (org-get-todo-state)))
+                     (when state
+                       (setq has-todos t)
+                       (if (member state '("DONE" "CANCELLED"))
+                           (setq has-done t)
+                         (setq all-done nil)))))
+                 nil 'tree)
+                ;; Update parent state based on children
+                (when has-todos
+                  (cond
+                   ;; All subtasks done -> mark parent as DONE
+                   ((and all-done (member parent-state '("TODO" "PROJ")))
+                    (org-todo "DONE"))
+                   ;; No subtasks done -> ensure parent is TODO/PROJ
+                   ((and (not has-done) (member parent-state '("DONE")))
+                    (org-todo (if (string-match "\\[.*/.*\\]" (org-get-heading)) "PROJ" "TODO")))
+                   ;; Some done -> ensure parent is not DONE
+                   ((and (not all-done) (member parent-state '("DONE")))
+                    (org-todo (if (string-match "\\[.*/.*\\]" (org-get-heading)) "PROJ" "TODO")))))))))))
+  
+  ;; Update parent when child TODO state changes
+  (add-hook 'org-after-todo-state-change-hook
+            (lambda ()
+              (save-excursion
+                (ignore-errors
+                  (org-up-heading-safe)
+                  (gtd/update-parent-todo)))))
+  
   ;; Refile targets - can refile within current file
   (setq org-refile-targets '((org-current-file :maxlevel . 3)))
   
