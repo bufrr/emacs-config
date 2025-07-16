@@ -148,7 +148,8 @@
       :desc "Insert checkbox" "g b" (lambda () (interactive)
                                       (end-of-line)
                                       (newline-and-indent)
-                                      (insert "- [ ] ")))
+                                      (insert "- [ ] "))
+      :desc "Update statistics" "g u" #'my/force-org-checkbox-statistics-update)
 
 ;; Org-publish configuration for blog
 (after! org
@@ -177,118 +178,264 @@
       (org-todo (if (= n-not-done 0) "DONE" "TODO"))))
   
   (add-hook 'org-after-todo-statistics-hook #'org-summary-todo)
-
-  ;; Optional: Update checkbox count and TODO state when toggling checkboxes
-  (defun my/org-checkbox-todo ()
-    "Update TODO state when checkbox count changes."
-    (save-excursion
-      (org-back-to-heading t)
-      (when-let ((todo-state (org-get-todo-state)))
-        (org-update-checkbox-count t))))
   
-  (add-hook 'org-checkbox-statistics-hook #'my/org-checkbox-todo)
+  ;; Hook to update TODO states and percentages after checkbox changes
+  (add-hook 'org-checkbox-statistics-hook 'my/org-safe-update-checkboxes)
 
-  ;; Refile targets - can refile within current file
-  (setq org-refile-targets '((org-current-file :maxlevel . 3)))
+  ;; Update TODO state when all checkboxes are checked
+  (defun my/org-update-todo-checkbox ()
+    "Update TODO state based on checkbox completion."
+    (when (eq major-mode 'org-mode)
+      (save-excursion
+        (condition-case nil
+            (progn
+              (org-back-to-heading t)
+              (let ((beg (point))
+                    (end (save-excursion (org-end-of-subtree t) (point)))
+                    (todo-state (org-get-todo-state)))
+                (when todo-state
+                  (goto-char beg)
+                  (let ((total 0) (done 0))
+                    ;; Count checkboxes
+                    (while (re-search-forward "^[ \t]*[-+*][ \t]+\\[\\([X ]\\)\\]" end t)
+                      (setq total (1+ total))
+                      (when (string= (match-string 1) "X")
+                        (setq done (1+ done))))
+                    ;; Update TODO state
+                    (goto-char beg)
+                    (cond
+                     ;; All checkboxes checked -> DONE
+                     ((and (> total 0) (= done total) (not (string= todo-state "DONE")))
+                      (org-todo "DONE"))
+                     ;; Not all checkboxes checked but item is DONE -> revert to TODO
+                     ((and (> total 0) (< done total) (member todo-state org-done-keywords))
+                      (org-todo "TODO")))))))
+          (error nil)))))
 
-  ;; Simple capture templates
-  (setq org-capture-templates
-        '(("t" "Task" entry (file+headline org-current-file "Tasks")
-           "** TODO %?\n   %U" :empty-lines 1)
-          ("p" "Project" entry (file+headline org-current-file "Projects")
-           "** PROJ %? [%]\n   :PROPERTIES:\n   :COOKIE_DATA: todo recursive\n   :END:\n   %U\n*** TODO " :empty-lines 1)
-          ("i" "Idea" entry (file+headline org-current-file "Ideas")
-           "** %?\n   %U" :empty-lines 1)))
+  ;; Safe update function
+  (defun my/org-safe-update-checkboxes ()
+    "Safely update all checkbox statistics without freezing."
+    (when (eq major-mode 'org-mode)
+      (condition-case err
+          (progn
+            ;; Update checkbox counts
+            (org-update-checkbox-count 'all)
+            ;; Don't update statistics cookies here - we'll handle percentages ourselves
+            ;; (org-update-statistics-cookies 'all)
+            ;; Update TODO states for items with checkboxes
+            (save-excursion
+              (goto-char (point-min))
+              (while (re-search-forward "^\\*+ \\(TODO\\|PROJ\\|DONE\\)" nil t)
+                (save-excursion
+                  (my/org-update-todo-checkbox))))
+            ;; Update parent percentages
+            (my/org-update-parent-todo-statistics)
+            ;; Update parent TODO states based on children
+            (my/org-update-parent-todo-states))
+        (error (message "Error updating checkboxes: %s" err)))))
 
-  ;; Custom HTML preamble and postamble
-  (defun blog/preamble (info)
-    (concat
-     "<header class=\"site-header\">"
-     "<div class=\"container\">"
-     "<h1 class=\"site-title\"><a href=\"/\">My Blog</a></h1>"
-     "<nav class=\"site-nav\">"
-     "<a href=\"/\">Home</a>"
-     "<a href=\"/about.html\">About</a>"
-     "</nav>"
-     "</div>"
-     "</header>"))
+  ;; Update parent project percentages based on checkbox completion
+  (defun my/org-update-parent-todo-statistics ()
+    "Update parent TODO statistics to include checkbox percentages."
+    (condition-case err
+        (save-excursion
+          ;; Go through each TODO/PROJ with percentage cookie
+          (goto-char (point-min))
+          (while (re-search-forward "^\\(\\*+\\) \\(TODO\\|PROJ\\) .+\\[\\([0-9]+\\)%\\]" nil t)
+            (let* ((level (length (match-string 1)))
+                   (cookie-start (match-beginning 3))
+                   (cookie-end (match-end 3))
+                   (cookie-text (match-string 3))
+                   (total 0.0)
+                   (done 0.0))
+              (when (and cookie-start cookie-end)  ; Ensure we have valid positions
+                (save-excursion
+                  (org-back-to-heading t)
+                  ;; Check if has children
+                  (when (save-excursion (ignore-errors (org-goto-first-child)))
+                    ;; Go through direct children
+                    (org-goto-first-child)
+                    (let ((continue t))
+                      (while continue
+                        (when (and (= (org-current-level) (1+ level))
+                                   (org-get-todo-state))
+                          (let* ((child-state (org-get-todo-state))
+                                 (line-end (line-end-position))
+                                 (checkbox-match (save-excursion
+                                                   (beginning-of-line)
+                                                   (re-search-forward "\\[\\([0-9]+\\)/\\([0-9]+\\)\\]" line-end t))))
+                            (setq total (1+ total))
+                            (cond
+                             ;; Has checkboxes - use checkbox percentage
+                             (checkbox-match
+                              (let ((checked (string-to-number (match-string 1)))
+                                    (total-boxes (string-to-number (match-string 2))))
+                                (when (> total-boxes 0)
+                                  (setq done (+ done (/ (float checked) total-boxes))))))
+                             ;; No checkboxes, DONE state
+                             ((member child-state org-done-keywords)
+                              (setq done (1+ done))))))
+                        (setq continue (ignore-errors (org-goto-sibling)))))
+                    ;; Update percentage
+                    (when (> total 0)
+                      (let ((pct (round (* 100 (/ done total)))))
+                        (save-excursion
+                          (goto-char cookie-start)
+                          (delete-region cookie-start cookie-end)
+                          (insert (number-to-string pct))))))))))
+          (error nil)))
 
-  (defun blog/postamble (info)
-    (concat
-     "<footer class=\"site-footer\">"
-     "<div class=\"container\">"
-     "<p>&copy; " (format-time-string "%Y") " - Built with Emacs & Org-mode</p>"
-     "</div>"
-     "</footer>"))
+    ;; Update parent TODO/PROJ states based on children completion
+    (defun my/org-update-parent-todo-states ()
+      "Update parent TODO/PROJ states based on their children's completion."
+      (save-excursion
+        (goto-char (point-min))
+        (while (re-search-forward "^\\(\\*+\\) \\(TODO\\|PROJ\\|DONE\\) .+\\[\\([0-9]+\\)%\\]" nil t)
+          (let* ((level (length (match-string 1)))
+                 (current-state (match-string 2))
+                 (percentage (string-to-number (match-string 3))))
+            (save-excursion
+              (org-back-to-heading t)
+              ;; Check if has children
+              (when (save-excursion (ignore-errors (org-goto-first-child)))
+                (cond
+                 ;; If 100% complete and not DONE, mark as DONE
+                 ((and (= percentage 100) (not (string= current-state "DONE")))
+                  (org-todo "DONE"))
+                 ;; If less than 100% and is DONE, revert to TODO/PROJ
+                 ((and (< percentage 100) (string= current-state "DONE"))
+                  (if (save-excursion
+                        (org-goto-first-child)
+                        (let ((has-subtasks nil))
+                          (while (and (not has-subtasks)
+                                      (= (org-current-level) (1+ level)))
+                            (when (org-get-todo-state)
+                              (setq has-subtasks t))
+                            (unless (org-goto-sibling)
+                              (goto-char (point-max))))
+                          has-subtasks))
+                      (org-todo "PROJ")
+                    (org-todo "TODO"))))))))))
 
-  ;; Custom sitemap function to exclude author
-  (defun blog/sitemap-function (title list)
-    "Generate sitemap as an Org file without author metadata."
-    (concat "#+TITLE: \n"  ; Empty title
-            "#+AUTHOR:\n"
-            "#+OPTIONS: author:nil toc:nil num:nil\n\n"
-            (org-list-to-org list)))
+    ;; Hook into checkbox toggle
+    (advice-add 'org-toggle-checkbox :after
+                (lambda (&rest _)
+                  (run-at-time 0.1 nil #'my/org-safe-update-checkboxes)))
 
-  ;; Custom function to generate article metadata
-  (defun blog/article-meta (info)
-    (let* ((author (org-export-data (plist-get info :author) info))
-           (date (org-export-data (org-export-get-date info "%B %d, %Y") info))
-           (tags (plist-get info :filetags))
-           (lastmod (plist-get info :lastmod)))
+    ;; Also hook into C-c C-c
+    (advice-add 'org-ctrl-c-ctrl-c :after
+                (lambda (&rest _)
+                  (when (org-at-item-checkbox-p)
+                    (run-at-time 0.1 nil #'my/org-safe-update-checkboxes))))
+
+    ;; Manual update function
+    (defun my/force-org-checkbox-statistics-update ()
+      "Force update of all checkbox statistics."
+      (interactive)
+      (my/org-safe-update-checkboxes)
+      (message "Checkbox statistics updated"))
+
+    ;; Refile targets - can refile within current file
+    (setq org-refile-targets '((org-current-file :maxlevel . 3)))
+
+    ;; Simple capture templates
+    (setq org-capture-templates
+          '(("t" "Task" entry (file+headline org-current-file "Tasks")
+             "** TODO %?\n   %U" :empty-lines 1)
+            ("p" "Project" entry (file+headline org-current-file "Projects")
+             "** PROJ %? [%]\n   :PROPERTIES:\n   :COOKIE_DATA: todo recursive\n   :END:\n   %U\n*** TODO " :empty-lines 1)
+            ("i" "Idea" entry (file+headline org-current-file "Ideas")
+             "** %?\n   %U" :empty-lines 1)))
+
+    ;; Custom HTML preamble and postamble
+    (defun blog/preamble (info)
       (concat
-       "<div class=\"article-meta\">"
-       (when author
-         (format "<span class=\"author\">By %s</span>" author))
-       (when date
-         (format "<span class=\"date\">Published: %s</span>" date))
-       (when (and lastmod (not (string-empty-p lastmod)))
-         (format "<span class=\"updated\">Updated: %s</span>" lastmod))
-       (when tags
-         (concat "<div class=\"tags\">"
-                 (mapconcat (lambda (tag)
-                              (format "<span class=\"tag\">%s</span>" tag))
-                            tags " ")
-                 "</div>"))
-       "</div>")))
+       "<header class=\"site-header\">"
+       "<div class=\"container\">"
+       "<h1 class=\"site-title\"><a href=\"/\">My Blog</a></h1>"
+       "<nav class=\"site-nav\">"
+       "<a href=\"/\">Home</a>"
+       "<a href=\"/about.html\">About</a>"
+       "</nav>"
+       "</div>"
+       "</header>"))
 
-  ;; Publishing configuration
-  (setq org-publish-project-alist
-        `(("blog-posts"
-           :base-directory ,blog-posts-directory
-           :base-extension "org"
-           :publishing-directory ,blog-publish-directory
-           :recursive t
-           :publishing-function org-html-publish-to-html
-           :headline-levels 4
-           :section-numbers nil
-           :with-toc t
-           :with-author t
-           :with-date t
-           :html-head "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">
+    (defun blog/postamble (info)
+      (concat
+       "<footer class=\"site-footer\">"
+       "<div class=\"container\">"
+       "<p>&copy; " (format-time-string "%Y") " - Built with Emacs & Org-mode</p>"
+       "</div>"
+       "</footer>"))
+
+    ;; Custom sitemap function to exclude author
+    (defun blog/sitemap-function (title list)
+      "Generate sitemap as an Org file without author metadata."
+      (concat "#+TITLE: \n"  ; Empty title
+              "#+AUTHOR:\n"
+              "#+OPTIONS: author:nil toc:nil num:nil\n\n"
+              (org-list-to-org list)))
+
+    ;; Custom function to generate article metadata
+    (defun blog/article-meta (info)
+      (let* ((author (org-export-data (plist-get info :author) info))
+             (date (org-export-data (org-export-get-date info "%B %d, %Y") info))
+             (tags (plist-get info :filetags))
+             (lastmod (plist-get info :lastmod)))
+        (concat
+         "<div class=\"article-meta\">"
+         (when author
+           (format "<span class=\"author\">By %s</span>" author))
+         (when date
+           (format "<span class=\"date\">Published: %s</span>" date))
+         (when (and lastmod (not (string-empty-p lastmod)))
+           (format "<span class=\"updated\">Updated: %s</span>" lastmod))
+         (when tags
+           (concat "<div class=\"tags\">"
+                   (mapconcat (lambda (tag)
+                                (format "<span class=\"tag\">%s</span>" tag))
+                              tags " ")
+                   "</div>"))
+         "</div>")))
+
+    ;; Publishing configuration
+    (setq org-publish-project-alist
+          `(("blog-posts"
+             :base-directory ,blog-posts-directory
+             :base-extension "org"
+             :publishing-directory ,blog-publish-directory
+             :recursive t
+             :publishing-function org-html-publish-to-html
+             :headline-levels 4
+             :section-numbers nil
+             :with-toc t
+             :with-author t
+             :with-date t
+             :html-head "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">
 <link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>
 <link href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap\" rel=\"stylesheet\">
 <link rel=\"stylesheet\" type=\"text/css\" href=\"/static/css/blog.css?v=4\" />
 <script src=\"/static/js/blog.js?v=4\" defer></script>"
-           :html-preamble blog/preamble
-           :html-postamble blog/postamble
-           :html-head-include-default-style nil
-           :html-head-include-scripts nil
-           :auto-sitemap t
-           :sitemap-filename "index.org"
-           :sitemap-title "Posts"
-           :sitemap-sort-files anti-chronologically
-           :sitemap-style list
-           :sitemap-format-entry (lambda (entry style project)
-                                   (format "[[file:%s][%s]]"
-                                           entry
-                                           (org-publish-find-title entry project)))
-           :sitemap-function blog/sitemap-function)
+             :html-preamble blog/preamble
+             :html-postamble blog/postamble
+             :html-head-include-default-style nil
+             :html-head-include-scripts nil
+             :auto-sitemap t
+             :sitemap-filename "index.org"
+             :sitemap-title "Posts"
+             :sitemap-sort-files anti-chronologically
+             :sitemap-style list
+             :sitemap-format-entry (lambda (entry style project)
+                                     (format "[[file:%s][%s]]"
+                                             entry
+                                             (org-publish-find-title entry project)))
+             :sitemap-function blog/sitemap-function)
 
-          ("blog-static"
-           :base-directory ,blog-static-directory
-           :base-extension "css\\|js\\|png\\|jpg\\|gif\\|pdf\\|mp3\\|ogg\\|swf\\|svg\\|woff\\|woff2\\|ico"
-           :publishing-directory ,(concat blog-publish-directory "static/")
-           :recursive t
-           :publishing-function org-publish-attachment)
+            ("blog-static"
+             :base-directory ,blog-static-directory
+             :base-extension "css\\|js\\|png\\|jpg\\|gif\\|pdf\\|mp3\\|ogg\\|swf\\|svg\\|woff\\|woff2\\|ico"
+             :publishing-directory ,(concat blog-publish-directory "static/")
+             :recursive t
+             :publishing-function org-publish-attachment)
 
-          ("blog" :components ("blog-posts" "blog-static")))))
+            ("blog" :components ("blog-posts" "blog-static"))))))
