@@ -343,7 +343,7 @@
           '(("t" "Task" entry (file+headline org-current-file "Tasks")
              "** TODO %?\n   %U" :empty-lines 1)
             ("p" "Project" entry (file+headline org-current-file "Projects")
-             "** PROJ %? [%]\n   :PROPERTIES:\n   :COOKIE_DATA: todo recursive\n   :END:\n   %U\n*** TODO " :empty-lines 1)
+             "** PROJ %? [%]\n   %U\n*** TODO " :empty-lines 1)
             ("i" "Idea" entry (file+headline org-current-file "Ideas")
              "** %?\n   %U" :empty-lines 1)))
 
