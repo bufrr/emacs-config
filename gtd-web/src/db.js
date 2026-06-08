@@ -1,0 +1,784 @@
+import { mkdirSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
+import { createHash, randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { expandHome, readEntries, slugTitle } from './org.js';
+
+const DONE_STATES = new Set(['DONE', 'CANCELLED']);
+const OPEN_STATES = new Set(['TODO', 'NEXT', 'PROJ', 'WAIT']);
+const TODO_STATES = new Set(['TODO', 'NEXT', 'PROJ', 'WAIT', 'DONE', 'CANCELLED']);
+const LISTS = new Set(['inbox', 'next', 'later', 'scheduled', 'someday', 'waiting']);
+const AREA_SECTIONS = new Map([
+  ['work', 'Work'],
+  ['parttime', 'Part-Time'],
+  ['learn', 'Learning'],
+  ['other', 'Tasks'],
+]);
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function stableOrgId(entry) {
+  const raw = `${entry.file}\0${entry.line}\0${entry.rawTitle || entry.title}`;
+  return `org_${createHash('sha1').update(raw).digest('hex').slice(0, 24)}`;
+}
+
+function pathKey(entry) {
+  return `${entry.file}\0${entry.outlinePath.join('\0')}`;
+}
+
+function parentPathKey(entry) {
+  return `${entry.file}\0${entry.parentPath.join('\0')}`;
+}
+
+function toJson(value) {
+  return JSON.stringify(value || []);
+}
+
+function fromJson(value, fallback = []) {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function isoFromDate(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function isoFromDateOnly(value) {
+  if (!value) return null;
+  if (value instanceof Date) return isoFromDate(value);
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return new Date(`${value}T00:00:00Z`).toISOString();
+  }
+  return isoFromDate(value);
+}
+
+function dateText(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().slice(0, 10);
+}
+
+function sectionForArea(area) {
+  return AREA_SECTIONS.get(area) || 'Tasks';
+}
+
+function tagsForArea(area) {
+  if (area === 'work') return ['work'];
+  if (area === 'parttime') return ['parttime'];
+  if (area === 'learn') return ['deep', 'learning'];
+  return [];
+}
+
+function effortForArea(area) {
+  if (area === 'learn' || area === 'work') return '1:00';
+  return '0:30';
+}
+
+function cleanList(value, fallback = 'next') {
+  return LISTS.has(value) ? value : fallback;
+}
+
+function listForImportedEntry(entry) {
+  if (entry.section === 'Inbox') return 'inbox';
+  if (entry.section === 'Ideas') return 'someday';
+  if (entry.todo === 'WAIT') return 'waiting';
+  if (entry.scheduledTime) return 'scheduled';
+  return 'next';
+}
+
+function tomorrowIso() {
+  const date = new Date();
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString();
+}
+
+function headingTags(tags) {
+  return tags?.length ? ` :${tags.join(':')}:` : '';
+}
+
+function orgTimestamp(iso) {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const pad = (n) => String(n).padStart(2, '0');
+  return `[${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${days[date.getDay()]} ${pad(date.getHours())}:${pad(date.getMinutes())}]`;
+}
+
+function ensureColumn(db, table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((info) => info.name);
+  if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+}
+
+function prepareDb(file) {
+  mkdirSync(path.dirname(file), { recursive: true });
+  const db = new DatabaseSync(file);
+  db.exec(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA foreign_keys = ON;
+
+    CREATE TABLE IF NOT EXISTS meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      parent_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'TODO',
+      list TEXT NOT NULL DEFAULT 'next',
+      focus INTEGER NOT NULL DEFAULT 0,
+      area TEXT NOT NULL DEFAULT 'other',
+      section TEXT NOT NULL DEFAULT 'Tasks',
+      priority TEXT,
+      effort TEXT,
+      notes TEXT,
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      due_at TEXT,
+      energy TEXT,
+      project TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      scheduled_at TEXT,
+      closed_at TEXT,
+      archived INTEGER NOT NULL DEFAULT 0,
+      trashed_at TEXT,
+      source_file TEXT,
+      source_line INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_tasks_area ON tasks(area);
+    CREATE INDEX IF NOT EXISTS idx_tasks_closed ON tasks(closed_at);
+    CREATE INDEX IF NOT EXISTS idx_tasks_trash ON tasks(trashed_at);
+
+    CREATE TABLE IF NOT EXISTS events (
+      id TEXT PRIMARY KEY,
+      task_id TEXT,
+      type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `);
+  ensureColumn(db, 'tasks', 'list', "list TEXT NOT NULL DEFAULT 'next'");
+  ensureColumn(db, 'tasks', 'focus', 'focus INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'tasks', 'due_at', 'due_at TEXT');
+  ensureColumn(db, 'tasks', 'energy', 'energy TEXT');
+  ensureColumn(db, 'tasks', 'project', 'project TEXT');
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_tasks_list ON tasks(list);
+    CREATE INDEX IF NOT EXISTS idx_tasks_focus ON tasks(focus);
+  `);
+  db.prepare('INSERT OR IGNORE INTO meta(key, value) VALUES(?, ?)').run('schema_version', '1');
+  const migrated = db.prepare('SELECT value FROM meta WHERE key = ?').get('nirvana_fields_seeded');
+  if (!migrated) {
+    db.exec(`
+      UPDATE tasks
+      SET list = CASE
+        WHEN scheduled_at IS NOT NULL THEN 'scheduled'
+        WHEN status = 'WAIT' THEN 'waiting'
+        WHEN section = 'Inbox' THEN 'inbox'
+        WHEN section = 'Ideas' THEN 'someday'
+        ELSE COALESCE(NULLIF(list, ''), 'next')
+      END
+      WHERE list IS NULL OR list = 'next' OR list = '';
+
+      UPDATE tasks
+      SET focus = 1
+      WHERE status = 'NEXT' AND trashed_at IS NULL AND archived = 0;
+    `);
+    db.prepare('INSERT INTO meta(key, value) VALUES(?, ?)').run('nirvana_fields_seeded', nowIso());
+  }
+  return db;
+}
+
+function rowsToEntries(rows) {
+  const entries = rows.map((row) => ({
+    id: row.id,
+    parentId: row.parent_id,
+    todo: row.status,
+    title: row.title,
+    rawTitle: row.title,
+    list: row.list || 'next',
+    focus: Boolean(row.focus),
+    section: row.section,
+    area: row.area,
+    priority: row.priority,
+    effort: row.effort,
+    time: row.effort,
+    energy: row.energy || '',
+    project: row.project || '',
+    sortOrder: row.sort_order,
+    due: dateText(row.due_at),
+    notes: row.notes || '',
+    tags: fromJson(row.tags_json),
+    created: dateText(row.created_at),
+    closed: dateText(row.closed_at),
+    scheduled: dateText(row.scheduled_at),
+    createdTime: row.created_at ? new Date(row.created_at) : null,
+    closedTime: row.closed_at ? new Date(row.closed_at) : null,
+    scheduledTime: row.scheduled_at ? new Date(row.scheduled_at) : null,
+    dueTime: row.due_at ? new Date(row.due_at) : null,
+    isCurrent: !row.archived && !row.trashed_at,
+    archived: Boolean(row.archived),
+    trashed: Boolean(row.trashed_at),
+    trashedAt: row.trashed_at,
+    file: row.source_file,
+    line: row.source_line,
+    level: 2,
+    parentPath: [row.section],
+    outlinePath: [row.section, row.title],
+    children: [],
+  }));
+
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  for (const entry of entries) {
+    if (!entry.parentId || !byId.has(entry.parentId)) continue;
+    const parent = byId.get(entry.parentId);
+    entry.parent = parent;
+    entry.level = parent.level + 1;
+    entry.parentPath = [...parent.outlinePath];
+    entry.outlinePath = [...entry.parentPath, entry.title];
+    parent.children.push(entry);
+  }
+
+  const descendantsOf = (entry) => {
+    const direct = entry.children || [];
+    return direct.flatMap((child) => [child, ...descendantsOf(child)]);
+  };
+
+  for (const entry of entries) {
+    const descendants = descendantsOf(entry);
+    const done = descendants.filter((item) => DONE_STATES.has(item.todo)).length;
+    const open = descendants.filter((item) => OPEN_STATES.has(item.todo)).length;
+    const next = descendants.filter((item) => item.todo === 'NEXT').length;
+    const wait = descendants.filter((item) => item.todo === 'WAIT').length;
+    const projects = descendants.filter((item) => item.todo === 'PROJ').length;
+    entry.hasOpenChild = descendants.some((item) => OPEN_STATES.has(item.todo));
+    entry.hasNextChild = descendants.some((item) => item.todo === 'NEXT');
+    entry.childrenCount = entry.children.length;
+    entry.childPreview = entry.children.slice(0, 5).map((child) => ({
+      depth: Math.max(1, child.level - entry.level),
+      todo: child.todo,
+      title: child.title,
+    }));
+    entry.subtasks = {
+      total: descendants.length,
+      done,
+      open,
+      next,
+      wait,
+      projects,
+      percent: descendants.length ? Math.round((done / descendants.length) * 100) : 0,
+    };
+  }
+
+  return entries.map(({ parent, children, ...entry }) => entry);
+}
+
+function startOfToday() {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function isOpenEntry(entry) {
+  return entry.isCurrent && !DONE_STATES.has(entry.todo);
+}
+
+function isDueForNext(entry) {
+  if (!entry.scheduledTime) return true;
+  return entry.scheduledTime <= startOfToday();
+}
+
+function sortEntries(entries) {
+  return [...entries].sort((a, b) => {
+    const scheduleA = a.scheduledTime?.getTime() || Number.MAX_SAFE_INTEGER;
+    const scheduleB = b.scheduledTime?.getTime() || Number.MAX_SAFE_INTEGER;
+    if (scheduleA !== scheduleB) return scheduleA - scheduleB;
+    const orderA = Number.isFinite(a.sortOrder) ? a.sortOrder : Number.MAX_SAFE_INTEGER;
+    const orderB = Number.isFinite(b.sortOrder) ? b.sortOrder : Number.MAX_SAFE_INTEGER;
+    if (orderA !== orderB) return orderA - orderB;
+    return a.title.localeCompare(b.title);
+  });
+}
+
+function buildGroups(entries, config) {
+  const open = entries.filter(isOpenEntry);
+  const notTrashed = entries.filter((entry) => !entry.trashed);
+  const completedCutoff = new Date();
+  completedCutoff.setDate(completedCutoff.getDate() - Number(config.days || 7));
+  const tagCounts = new Map();
+  const projectCounts = new Map();
+  for (const entry of open) {
+    const tags = entry.tags?.length ? entry.tags : ['-'];
+    for (const tag of tags) tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
+    const project = entry.project || (entry.todo === 'PROJ' ? entry.title : '');
+    if (project) projectCounts.set(project, (projectCounts.get(project) || 0) + 1);
+  }
+
+  const groups = {
+    all: sortEntries(open),
+    inbox: sortEntries(open.filter((entry) => entry.list === 'inbox')),
+    focus: sortEntries(open.filter((entry) => entry.focus)),
+    next: sortEntries(open.filter((entry) => entry.list === 'next' || (entry.list === 'scheduled' && isDueForNext(entry)))),
+    actions: [],
+    later: sortEntries(open.filter((entry) => entry.list === 'later')),
+    stale: [],
+    scheduled: sortEntries(open.filter((entry) => entry.list === 'scheduled' || entry.scheduledTime)),
+    someday: sortEntries(open.filter((entry) => entry.list === 'someday')),
+    waiting: sortEntries(open.filter((entry) => entry.list === 'waiting' || entry.todo === 'WAIT')),
+    completed: sortEntries(notTrashed.filter((entry) => DONE_STATES.has(entry.todo) && (!entry.closedTime || entry.closedTime >= completedCutoff))).reverse(),
+    trash: sortEntries(entries.filter((entry) => entry.trashed)),
+    areas: {
+      work: [],
+      parttime: [],
+      learn: [],
+      other: [],
+    },
+    tags: [...tagCounts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    projects: [...projectCounts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    counts: {},
+  };
+  groups.actions = groups.next;
+  groups.stale = groups.later;
+
+  for (const area of Object.keys(groups.areas)) {
+    groups.areas[area] = sortEntries(open.filter((entry) => entry.area === area));
+  }
+
+  groups.counts = {
+    inbox: groups.inbox.length,
+    focus: groups.focus.length,
+    next: groups.next.length,
+    actions: groups.actions.length,
+    later: groups.later.length,
+    stale: groups.later.length,
+    scheduled: groups.scheduled.length,
+    someday: groups.someday.length,
+    waiting: groups.waiting.length,
+    completed: groups.completed.length,
+    trash: groups.trash.length,
+  };
+  return groups;
+}
+
+function rowsForExport(rows) {
+  const active = rows.filter((row) => !row.archived && !row.trashed_at);
+  const byParent = new Map();
+  for (const row of active) {
+    const key = row.parent_id || '';
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(row);
+  }
+  for (const children of byParent.values()) {
+    children.sort((a, b) => a.sort_order - b.sort_order || a.title.localeCompare(b.title));
+  }
+  return byParent;
+}
+
+function exportTree(byParent, parentId, level) {
+  const rows = byParent.get(parentId || '') || [];
+  const lines = [];
+  for (const row of rows) {
+    const stars = '*'.repeat(level);
+    const tags = headingTags(fromJson(row.tags_json));
+    const priority = row.priority ? `[#${row.priority}] ` : '';
+    lines.push(`${stars} ${row.status} ${priority}${row.title}${tags}`);
+    const properties = [
+      row.list ? `   :List: ${row.list}` : '',
+      row.focus ? '   :Focus: true' : '',
+      row.effort ? `   :Effort: ${row.effort}` : '',
+      row.energy ? `   :Energy: ${row.energy}` : '',
+      row.project ? `   :Project: ${row.project}` : '',
+      row.created_at ? `   :Created: ${orgTimestamp(row.created_at)}` : '',
+      row.source_file ? '   :Source: gtd-web-import' : '   :Source: gtd-web',
+    ].filter(Boolean);
+    if (properties.length) {
+      lines.push('   :PROPERTIES:', ...properties, '   :END:');
+    }
+    if (row.scheduled_at) lines.push(`   SCHEDULED: ${orgTimestamp(row.scheduled_at)}`);
+    if (row.due_at) lines.push(`   DEADLINE: ${orgTimestamp(row.due_at)}`);
+    if (row.closed_at) lines.push(`   CLOSED: ${orgTimestamp(row.closed_at)}`);
+    if (row.notes) lines.push('', ...row.notes.split('\n'));
+    lines.push(...exportTree(byParent, row.id, level + 1));
+    lines.push('');
+  }
+  return lines;
+}
+
+export async function createGtdStore(config) {
+  const dbFile = expandHome(config.dbFile || '~/org/gtd/gtd.sqlite');
+  const db = prepareDb(dbFile);
+
+  const insertTask = db.prepare(`
+    INSERT OR REPLACE INTO tasks (
+      id, parent_id, title, status, list, focus, area, section, priority, effort,
+      notes, tags_json, due_at, energy, project, sort_order, created_at, updated_at,
+      scheduled_at, closed_at, archived, trashed_at, source_file, source_line
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertEvent = db.prepare('INSERT INTO events(id, task_id, type, payload_json, created_at) VALUES(?, ?, ?, ?, ?)');
+
+  function logEvent(taskId, type, payload) {
+    insertEvent.run(randomUUID(), taskId || null, type, JSON.stringify(payload || {}), nowIso());
+  }
+
+  function allRows() {
+    return db.prepare('SELECT * FROM tasks ORDER BY sort_order, created_at, title').all();
+  }
+
+  function getTask(id) {
+    return db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+  }
+
+  async function importOrgIfEmpty() {
+    const existing = db.prepare('SELECT COUNT(*) AS count FROM tasks').get().count;
+    if (existing > 0) return { imported: 0, skipped: true };
+
+    const currentFile = expandHome(config.currentFile);
+    const archiveFile = expandHome(config.archiveFile);
+    const current = (await readEntries([currentFile])).map((entry) => ({ ...entry, archived: 0 }));
+    const archived = (await readEntries([archiveFile])).map((entry) => ({ ...entry, archived: 1 }));
+    const sourceEntries = [...current, ...archived]
+      .filter((entry) => entry.level > 1)
+      .filter((entry) => entry.todo || ['Inbox', 'Ideas'].includes(entry.section));
+
+    const idByPath = new Map();
+    const importedAt = nowIso();
+    db.exec('BEGIN');
+    try {
+      sourceEntries.forEach((entry, index) => {
+        const id = stableOrgId(entry);
+        const parentId = idByPath.get(parentPathKey(entry)) || null;
+        idByPath.set(pathKey(entry), id);
+        const status = entry.todo || 'TODO';
+        const list = listForImportedEntry(entry);
+        insertTask.run(
+          id,
+          parentId,
+          entry.title,
+          status,
+          list,
+          status === 'NEXT' ? 1 : 0,
+          entry.area || 'other',
+          entry.section || sectionForArea(entry.area),
+          entry.priority || null,
+          entry.effort || null,
+          null,
+          toJson(entry.tags),
+          null,
+          null,
+          null,
+          index * 1024,
+          isoFromDate(entry.createdTime) || importedAt,
+          importedAt,
+          isoFromDate(entry.scheduledTime),
+          isoFromDate(entry.closedTime),
+          entry.archived,
+          null,
+          entry.file || null,
+          entry.line || null,
+        );
+      });
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    logEvent(null, 'org_import', { imported: sourceEntries.length, currentFile, archiveFile });
+    return { imported: sourceEntries.length, skipped: false };
+  }
+
+  await importOrgIfEmpty();
+
+  return {
+    dbFile,
+    exportFile: expandHome(config.exportFile || '~/org/gtd/gtd-web-export.org'),
+
+    readState() {
+      const entries = rowsToEntries(allRows());
+      const groups = buildGroups(entries, config);
+      return {
+        files: {
+          db: dbFile,
+          current: expandHome(config.currentFile),
+          archive: expandHome(config.archiveFile),
+          export: expandHome(config.exportFile || '~/org/gtd/gtd-web-export.org'),
+        },
+        storage: {
+          primary: 'sqlite',
+          org: 'import-export',
+          autoExport: config.autoExport !== false,
+        },
+        generatedAt: new Date().toISOString(),
+        groups,
+      };
+    },
+
+    addTask(input) {
+      const title = slugTitle(input.title);
+      if (!title) throw new Error('Task title is required');
+      const area = input.area || 'other';
+      const section = input.section || sectionForArea(area);
+      const list = cleanList(input.list, input.scheduledAt ? 'scheduled' : 'next');
+      const status = input.todo || (list === 'waiting' ? 'WAIT' : 'TODO');
+      if (!TODO_STATES.has(status)) throw new Error(`Unsupported TODO state: ${status}`);
+      const scheduledAt = Object.hasOwn(input, 'scheduledAt')
+        ? (input.scheduledAt ? isoFromDateOnly(input.scheduledAt) : null)
+        : (list === 'scheduled' ? tomorrowIso() : null);
+      const created = nowIso();
+      const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS value FROM tasks WHERE archived = 0 AND trashed_at IS NULL').get().value;
+      const id = randomUUID();
+      insertTask.run(
+        id,
+        input.parentId || null,
+        title,
+        status,
+        list,
+        input.focus ? 1 : 0,
+        area,
+        section,
+        input.priority || null,
+        input.effort || effortForArea(area),
+        input.notes || null,
+        toJson(input.tags || tagsForArea(area)),
+        input.dueAt ? isoFromDateOnly(input.dueAt) : null,
+        input.energy || null,
+        input.project || null,
+        maxOrder + 1024,
+        created,
+        created,
+        scheduledAt,
+        null,
+        0,
+        null,
+        null,
+        null,
+      );
+      logEvent(id, 'task_created', { title, area, section, list });
+      return { ok: true, id, title };
+    },
+
+    updateTaskState(id, todo) {
+      if (!TODO_STATES.has(todo)) throw new Error(`Unsupported TODO state: ${todo}`);
+      const task = getTask(id);
+      if (!task) throw new Error('Task not found');
+      const closedAt = DONE_STATES.has(todo) ? nowIso() : null;
+      const list = todo === 'WAIT' ? 'waiting' : (todo === 'NEXT' ? 'next' : task.list);
+      db.prepare('UPDATE tasks SET status = ?, list = ?, closed_at = ?, updated_at = ? WHERE id = ?').run(todo, list, closedAt, nowIso(), id);
+      logEvent(id, 'task_status_changed', { from: task.status, to: todo });
+      return { ok: true, id, title: task.title, todo };
+    },
+
+    updateTask(id, input) {
+      const task = getTask(id);
+      if (!task) throw new Error('Task not found');
+      const title = input.title === undefined ? task.title : slugTitle(input.title);
+      if (!title) throw new Error('Task title is required');
+      const status = input.todo || task.status;
+      if (!TODO_STATES.has(status)) throw new Error(`Unsupported TODO state: ${status}`);
+      const area = input.area || task.area;
+      const section = input.section || sectionForArea(area);
+      const list = cleanList(input.list, task.list || 'next');
+      const focus = Object.hasOwn(input, 'focus') ? (input.focus ? 1 : 0) : task.focus;
+      const scheduledAt = Object.hasOwn(input, 'scheduledAt')
+        ? (input.scheduledAt ? isoFromDateOnly(input.scheduledAt) : null)
+        : task.scheduled_at;
+      const dueAt = Object.hasOwn(input, 'dueAt')
+        ? (input.dueAt ? isoFromDateOnly(input.dueAt) : null)
+        : task.due_at;
+      const tags = Object.hasOwn(input, 'tags') ? toJson(input.tags || []) : task.tags_json;
+      const closedAt = DONE_STATES.has(status)
+        ? (task.closed_at || nowIso())
+        : null;
+      db.prepare(`
+        UPDATE tasks
+        SET title = ?, status = ?, list = ?, focus = ?, area = ?, section = ?,
+            effort = ?, notes = ?, tags_json = ?, scheduled_at = ?, due_at = ?,
+            energy = ?, project = ?, closed_at = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        title,
+        status,
+        list,
+        focus,
+        area,
+        section,
+        input.effort === undefined ? task.effort : input.effort || null,
+        input.notes === undefined ? task.notes : input.notes || null,
+        tags,
+        scheduledAt,
+        dueAt,
+        input.energy === undefined ? task.energy : input.energy || null,
+        input.project === undefined ? task.project : input.project || null,
+        closedAt,
+        nowIso(),
+        id,
+      );
+      logEvent(id, 'task_updated', { title, status, list, focus: Boolean(focus), area, section });
+      return { ok: true, id, title, todo: status };
+    },
+
+    reorderTasks(ids) {
+      if (!Array.isArray(ids) || ids.length < 2) return { ok: true, ids: Array.isArray(ids) ? ids : [] };
+      const uniqueIds = [...new Set(ids.map((id) => String(id)).filter(Boolean))];
+      if (uniqueIds.length < 2) return { ok: true, ids: uniqueIds };
+      for (const id of uniqueIds) {
+        if (!getTask(id)) throw new Error(`Task not found: ${id}`);
+      }
+      const updateOrder = db.prepare('UPDATE tasks SET sort_order = ?, updated_at = ? WHERE id = ? AND archived = 0 AND trashed_at IS NULL');
+      const updatedAt = nowIso();
+      db.exec('BEGIN');
+      try {
+        uniqueIds.forEach((id, index) => {
+          updateOrder.run((index + 1) * 1024, updatedAt, id);
+        });
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+      logEvent(null, 'tasks_reordered', { ids: uniqueIds });
+      return { ok: true, ids: uniqueIds };
+    },
+
+    setTaskFocus(id, focus) {
+      const task = getTask(id);
+      if (!task) throw new Error('Task not found');
+      db.prepare('UPDATE tasks SET focus = ?, updated_at = ? WHERE id = ?').run(focus ? 1 : 0, nowIso(), id);
+      logEvent(id, 'task_focus_changed', { title: task.title, focus: Boolean(focus) });
+      return { ok: true, id, title: task.title, focus: Boolean(focus) };
+    },
+
+    moveToLogbook(id) {
+      const task = getTask(id);
+      if (!task) throw new Error('Task not found');
+      db.prepare('UPDATE tasks SET status = ?, closed_at = ?, updated_at = ? WHERE id = ?').run('DONE', nowIso(), nowIso(), id);
+      logEvent(id, 'task_moved_to_logbook', { title: task.title });
+      return { ok: true, id, title: task.title };
+    },
+
+    convertToProject(id) {
+      const task = getTask(id);
+      if (!task) throw new Error('Task not found');
+      db.prepare('UPDATE tasks SET status = ?, project = ?, updated_at = ? WHERE id = ?').run('PROJ', task.project || task.title, nowIso(), id);
+      logEvent(id, 'task_converted_to_project', { title: task.title });
+      return { ok: true, id, title: task.title };
+    },
+
+    copyTask(id) {
+      const task = getTask(id);
+      if (!task) throw new Error('Task not found');
+      const created = nowIso();
+      const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS value FROM tasks WHERE archived = 0 AND trashed_at IS NULL').get().value;
+      const copyId = randomUUID();
+      insertTask.run(
+        copyId,
+        task.parent_id || null,
+        `${task.title} Copy`,
+        DONE_STATES.has(task.status) ? 'TODO' : task.status,
+        task.list || 'next',
+        task.focus || 0,
+        task.area || 'other',
+        task.section || sectionForArea(task.area),
+        task.priority || null,
+        task.effort || null,
+        task.notes || null,
+        task.tags_json || '[]',
+        task.due_at || null,
+        task.energy || null,
+        task.project || null,
+        maxOrder + 1024,
+        created,
+        created,
+        task.scheduled_at || null,
+        null,
+        0,
+        null,
+        null,
+        null,
+      );
+      logEvent(copyId, 'task_copied', { from: id, title: task.title });
+      return { ok: true, id: copyId, title: `${task.title} Copy` };
+    },
+
+    moveToTrash(id) {
+      const task = getTask(id);
+      if (!task) throw new Error('Task not found');
+      db.prepare('UPDATE tasks SET trashed_at = ?, updated_at = ? WHERE id = ?').run(nowIso(), nowIso(), id);
+      logEvent(id, 'task_trashed', { title: task.title });
+      return { ok: true, id, title: task.title };
+    },
+
+    restoreTask(id) {
+      const task = getTask(id);
+      if (!task) throw new Error('Task not found');
+      db.prepare('UPDATE tasks SET trashed_at = NULL, updated_at = ? WHERE id = ?').run(nowIso(), id);
+      logEvent(id, 'task_restored', { title: task.title });
+      return { ok: true, id, title: task.title };
+    },
+
+    deleteTask(id) {
+      const task = getTask(id);
+      if (!task) throw new Error('Task not found');
+      db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+      logEvent(id, 'task_deleted', { title: task.title });
+      return { ok: true, id, title: task.title };
+    },
+
+    emptyTrash() {
+      const trashed = db.prepare('SELECT id, title FROM tasks WHERE trashed_at IS NOT NULL').all();
+      db.prepare('DELETE FROM tasks WHERE trashed_at IS NOT NULL').run();
+      logEvent(null, 'trash_emptied', { count: trashed.length, ids: trashed.map((task) => task.id) });
+      return { ok: true, count: trashed.length };
+    },
+
+    getTask,
+
+    exportOrgText() {
+      const rows = allRows();
+      const byParent = rowsForExport(rows);
+      const sections = ['Inbox', 'Tasks', 'Work', 'Part-Time', 'Learning', 'Ideas'];
+      const lines = ['#+TITLE: GTD Export', `#+DATE: ${orgTimestamp(nowIso())}`, ''];
+      for (const section of sections) {
+        lines.push(`* ${section}`);
+        const sectionRows = (byParent.get('') || []).filter((row) => row.section === section);
+        const sectionMap = new Map(byParent);
+        sectionMap.set('', sectionRows);
+        lines.push(...exportTree(sectionMap, '', 2));
+      }
+      return `${lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()}\n`;
+    },
+
+    async writeOrgExport(file = config.exportFile || '~/org/gtd/gtd-web-export.org') {
+      const target = expandHome(file);
+      mkdirSync(path.dirname(target), { recursive: true });
+      await writeFile(target, this.exportOrgText(), 'utf8');
+      logEvent(null, 'org_export', { file: target });
+      return { ok: true, file: target };
+    },
+
+    close() {
+      db.close();
+    },
+  };
+}

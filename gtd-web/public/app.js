@@ -1,0 +1,1655 @@
+const VIEWS = {
+  inbox: { title: 'Inbox', subtitle: "New / unprocessed to-do's", group: 'inbox', empty: 'Your Inbox is empty' },
+  focus: { title: 'Focus', subtitle: 'Today', group: 'focus', empty: 'Focus list is empty' },
+  next: { title: 'Next', subtitle: "To-do's for anytime", group: 'actions', section: 'Actions', empty: 'Next list is empty', chips: true },
+  projects: { title: 'Projects', subtitle: 'Open loops with visible next actions', group: 'projects', empty: 'No active projects' },
+  review: { title: 'Review', subtitle: 'Weekly clarity check', group: 'all', empty: 'Nothing to review' },
+  later: { title: 'Later', subtitle: "To-do's for later", group: 'later', empty: 'Later list is empty' },
+  scheduled: { title: 'Scheduled', subtitle: '... for a future date', group: 'scheduled', empty: 'You have nothing Scheduled' },
+  someday: { title: 'Someday', subtitle: 'Maybe', group: 'someday', empty: 'Someday list is empty' },
+  waiting: { title: 'Waiting', subtitle: '... for someone / on hold', group: 'waiting', empty: 'You are not currently Waiting on anyone' },
+  work: { title: 'Work', subtitle: 'Project actions', area: 'work', empty: 'Work list is empty' },
+  parttime: { title: 'Part-Time', subtitle: 'Project actions', area: 'parttime', empty: 'Part-Time list is empty' },
+  learn: { title: 'Learning', subtitle: 'Project actions', area: 'learn', empty: 'Learning list is empty' },
+  other: { title: 'Other', subtitle: 'Project actions', area: 'other', empty: 'Other list is empty' },
+  logbook: { title: 'Logbook', subtitle: 'Recently completed', group: 'completed', section: 'Done', empty: 'No completed tasks found', showClosed: true },
+  trash: { title: 'Trash', subtitle: '... to be deleted', group: 'trash', empty: 'Trash is empty.' },
+};
+
+const VIEW_ORDER = ['inbox', 'focus', 'next', 'projects', 'review', 'work', 'parttime', 'learn', 'other', 'logbook', 'trash'];
+
+const LIST_LABELS = {
+  inbox: 'Inbox',
+  next: 'Next',
+  later: 'Later',
+  scheduled: 'Scheduled',
+  someday: 'Someday',
+  waiting: 'Waiting',
+};
+
+const AREA_LABELS = {
+  work: 'Work',
+  parttime: 'Part-Time',
+  learn: 'Learning',
+  other: 'Other',
+};
+
+const TIME_OPTIONS = ['', '5m', '10m', '15m', '30m', '45m', '1h', '2h', '3h', '4h', '6h', '8h', 'whoa nelly!'];
+const ENERGY_OPTIONS = ['', 'low', 'medium', 'high'];
+const TIME_LABELS = {
+  '5m': '5 minutes',
+  '10m': '10 minutes',
+  '15m': '15 minutes',
+  '30m': '30 minutes',
+  '45m': '45 minutes',
+  '1h': '1 hour',
+  '2h': '2 hours',
+  '3h': '3 hours',
+  '4h': '4 hours',
+  '6h': '6 hours',
+  '8h': '8 hours',
+};
+const ENERGY_LABELS = {
+  low: '• low',
+  medium: '•• med',
+  high: '••• high',
+};
+const DEFAULT_CONTEXT_TAGS = ['AI', 'blockchain', 'Errand', 'gateway', 'Home', 'Important', 'Pending', 'work', 'Work'];
+
+let state = null;
+let currentView = 'next';
+let currentProject = '';
+let areaFilter = 'all';
+let tagFilter = 'all';
+let timeFilter = 'all';
+let energyFilter = 'all';
+let editingId = null;
+let menuId = null;
+let noteMode = localStorage.getItem('gtd-note-mode') || 'preview';
+let draggingId = null;
+let dragOverId = null;
+let dragPosition = null;
+let pointerDrag = null;
+
+const DRAG_START_DISTANCE = 8;
+
+const els = {
+  title: document.querySelector('#view-title'),
+  subtitle: document.querySelector('#view-subtitle'),
+  chips: document.querySelector('#chips'),
+  content: document.querySelector('#content'),
+  search: document.querySelector('#search'),
+  form: document.querySelector('#quick-add'),
+  addStatus: document.querySelector('#add-status'),
+  updated: document.querySelector('#updated'),
+  rail: document.querySelector('.rail'),
+  projectList: document.querySelector('#project-list'),
+  projectSummary: document.querySelector('#project-summary'),
+  tagList: document.querySelector('#tag-list'),
+  settings: document.querySelector('#settings'),
+  settingsPanel: document.querySelector('#settings-panel'),
+  settingsClose: document.querySelector('#settings-close'),
+  exportOrg: document.querySelector('#export-org'),
+  exportStatus: document.querySelector('#export-status'),
+  storagePrimary: document.querySelector('#storage-primary'),
+  storageExport: document.querySelector('#storage-export'),
+  storageDb: document.querySelector('#storage-db'),
+};
+els.titleInput = els.form.elements.title;
+els.areaSelect = els.form.elements.area;
+
+function esc(value = '') {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function htmlLines(value = '') {
+  return esc(value).replaceAll('\n', '<br>');
+}
+
+function dateOnly(date) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function relativeDate(days) {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() + days);
+  return dateOnly(date);
+}
+
+function nextWeekDate() {
+  return relativeDate(7);
+}
+
+function minutesForEffort(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  if (text === 'whoa nelly!') return Number.MAX_SAFE_INTEGER;
+  const minuteMatch = text.match(/^(\d+)m$/);
+  if (minuteMatch) return Number(minuteMatch[1]);
+  const hourMatch = text.match(/^(\d+)h$/);
+  if (hourMatch) return Number(hourMatch[1]) * 60;
+  const clockMatch = text.match(/^(\d+):(\d{2})$/);
+  if (clockMatch) return Number(clockMatch[1]) * 60 + Number(clockMatch[2]);
+  return null;
+}
+
+function entriesForView(viewId) {
+  if (viewId === 'project') return filterEntries(entriesForProject(currentProject), viewId);
+  if (viewId === 'projects') return filterEntries(projectRows(), viewId);
+  if (viewId === 'review') return filterEntries(entriesForReview(), viewId);
+  const view = VIEWS[viewId] || VIEWS.next;
+  const list = view.area ? (state.groups.areas[view.area] || []) : (state.groups[view.group] || []);
+  return filterEntries(list, viewId);
+}
+
+function projectSlug(name) {
+  return encodeURIComponent(name);
+}
+
+function projectNameFromSlug(slug) {
+  try {
+    return decodeURIComponent(slug || '');
+  } catch {
+    return slug || '';
+  }
+}
+
+function projectFromHash(hashValue) {
+  const hash = String(hashValue || '').replace(/^#/, '');
+  if (!hash.startsWith('project/')) return null;
+  return projectNameFromSlug(hash.slice('project/'.length));
+}
+
+function projectByName(name) {
+  const projects = state?.groups?.projects || [];
+  return projects.find((project) => project.name === name) || null;
+}
+
+function firstProjectName() {
+  return state?.groups?.projects?.[0]?.name || '';
+}
+
+function effectiveProjectName(name = currentProject) {
+  return projectByName(name)?.name || firstProjectName();
+}
+
+function isProjectEntry(entry, projectName) {
+  return Boolean(projectName) && (
+    entry.project === projectName ||
+    (entry.todo === 'PROJ' && entry.title === projectName) ||
+    (entry.parentPath || []).includes(projectName) ||
+    ((entry.outlinePath || []).includes(projectName) && entry.title !== projectName)
+  );
+}
+
+function entriesForProject(projectName) {
+  const project = effectiveProjectName(projectName);
+  if (!project) return [];
+  return entriesForSearch().filter((entry) => !entry.trashed && isProjectEntry(entry, project));
+}
+
+function projectActionEntries(projectName, entries = entriesForProject(projectName)) {
+  return entries.filter((entry) => !(entry.todo === 'PROJ' && entry.title === projectName));
+}
+
+function projectProgressStats(projectName, entries = entriesForProject(projectName)) {
+  const actions = projectActionEntries(projectName, entries);
+  const done = actions.filter((entry) => entry.todo === 'DONE' || entry.todo === 'CANCELLED').length;
+  const open = actions.filter((entry) => entry.isCurrent && entry.todo !== 'DONE' && entry.todo !== 'CANCELLED').length;
+  const next = actions.filter((entry) => entry.isCurrent && entry.list === 'next').length;
+  const wait = actions.filter((entry) => entry.isCurrent && (entry.list === 'waiting' || entry.todo === 'WAIT')).length;
+  const projects = actions.filter((entry) => entry.todo === 'PROJ').length;
+  const total = actions.length;
+  return {
+    total,
+    done,
+    open,
+    next,
+    wait,
+    projects,
+    percent: total ? Math.round((done / total) * 100) : 0,
+  };
+}
+
+function projectRows() {
+  return entriesForSearch()
+    .filter((entry) => entry.todo === 'PROJ' && entry.isCurrent && !entry.trashed)
+    .sort((a, b) => (a.area || '').localeCompare(b.area || '') || a.title.localeCompare(b.title));
+}
+
+function allCurrentEntries() {
+  return entriesForSearch().filter((entry) => entry.isCurrent && !entry.trashed);
+}
+
+function daysAgo(days) {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - days);
+  return date;
+}
+
+function dateValue(value) {
+  if (!value) return null;
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isDoneRecently(entry, days = 7) {
+  const closed = dateValue(entry.closed);
+  return Boolean(closed && closed >= daysAgo(days));
+}
+
+function isStaleOpen(entry, days = 14) {
+  if (!entry.isCurrent || entry.todo === 'DONE' || entry.todo === 'CANCELLED') return false;
+  const created = dateValue(entry.created);
+  return Boolean(created && created < daysAgo(days) && !entry.scheduled && entry.list !== 'waiting');
+}
+
+function projectHasNextAction(projectName) {
+  return projectActionEntries(projectName)
+    .some((entry) => entry.isCurrent && !entry.trashed && entry.todo !== 'DONE' && entry.todo !== 'CANCELLED' && entry.list === 'next');
+}
+
+function entriesForReview() {
+  const current = allCurrentEntries();
+  const completed = state.groups.completed || [];
+  const review = [
+    ...current.filter((entry) => entry.list === 'inbox'),
+    ...current.filter((entry) => entry.list === 'waiting' || entry.todo === 'WAIT'),
+    ...current.filter((entry) => entry.list === 'scheduled'),
+    ...current.filter((entry) => entry.list === 'later' || entry.list === 'someday'),
+    ...current.filter(isStaleOpen),
+    ...projectRows(),
+    ...completed.filter((entry) => isDoneRecently(entry, 7)),
+  ];
+  return [...new Map(review.map((entry) => [entry.id, entry])).values()];
+}
+
+function entriesForSearch() {
+  const seen = new Map();
+  for (const entry of [
+    ...(state.groups.all || []),
+    ...(state.groups.completed || []),
+    ...(state.groups.trash || []),
+  ]) {
+    seen.set(entry.id, entry);
+  }
+  return [...seen.values()];
+}
+
+function filterEntries(entries, viewId = currentView) {
+  let filtered = entries;
+  if (['next', 'review'].includes(viewId) && areaFilter !== 'all') {
+    filtered = filtered.filter((entry) => entry.area === areaFilter);
+  }
+  if (timeFilter !== 'all') {
+    const limit = minutesForEffort(timeFilter);
+    filtered = filtered.filter((entry) => {
+      const minutes = minutesForEffort(entry.effort);
+      return minutes !== null && minutes <= limit;
+    });
+  }
+  if (energyFilter !== 'all') {
+    filtered = filtered.filter((entry) => entry.energy === energyFilter);
+  }
+  if (tagFilter !== 'all') {
+    filtered = filtered.filter((entry) => {
+      const tags = entry.tags || [];
+      return tagFilter === '-' ? tags.length === 0 : tags.includes(tagFilter);
+    });
+  }
+  return filtered;
+}
+
+function resetViewState() {
+  areaFilter = 'all';
+  timeFilter = 'all';
+  energyFilter = 'all';
+  editingId = null;
+  menuId = null;
+}
+
+function listForCurrentView() {
+  if (['inbox', 'next', 'later', 'scheduled', 'someday', 'waiting'].includes(currentView)) return currentView;
+  if (currentView === 'project') return 'next';
+  if (currentView === 'focus') return 'next';
+  return 'next';
+}
+
+function todoForList(list) {
+  return list === 'waiting' ? 'WAIT' : 'TODO';
+}
+
+function entryById(id) {
+  return entriesForSearch().find((entry) => entry.id === id) || null;
+}
+
+function matchesSearch(entry) {
+  const query = els.search.value.trim().toLowerCase();
+  if (!query) return true;
+  const haystack = [
+    entry.todo,
+    entry.title,
+    entry.section,
+    entry.area,
+    entry.effort,
+    entry.energy,
+    entry.project,
+    entry.due,
+    entry.list,
+    entry.scheduled,
+    entry.closed,
+    ...(entry.tags || []),
+    ...(entry.outlinePath || []),
+  ].filter(Boolean).join(' ').toLowerCase();
+  return haystack.includes(query);
+}
+
+function entriesForRender(query) {
+  const entries = entriesForView(currentView);
+  return query ? entries.filter(matchesSearch) : entries;
+}
+
+function setCounts() {
+  const groups = state.groups;
+  const counts = {
+    inbox: groups.counts.inbox,
+    focus: groups.counts.focus,
+    actions: groups.actions.length,
+    projects: projectRows().length,
+    review: entriesForReview().length,
+    later: groups.counts.later,
+    stale: groups.counts.later,
+    scheduled: groups.counts.scheduled,
+    someday: groups.counts.someday,
+    waiting: groups.counts.waiting,
+    work: groups.areas.work.length,
+    parttime: groups.areas.parttime.length,
+    learn: groups.areas.learn.length,
+    other: groups.areas.other.length,
+  };
+  for (const [name, value] of Object.entries(counts)) {
+    const node = document.querySelector(`[data-count="${name}"]`);
+    if (node) node.textContent = value > 0 ? value : '';
+  }
+  els.updated.textContent = new Date(state.generatedAt).toLocaleString();
+}
+
+function renderProjects() {
+  if (!els.projectList) return;
+  const projects = state.groups.projects || [];
+  if (!projects.length) {
+    els.projectList.innerHTML = '';
+    return;
+  }
+  els.projectList.innerHTML = projects.map((project) => `
+    <a class="rail-link project ${currentView === 'project' && effectiveProjectName() === project.name ? 'active' : ''}"
+      href="#project/${projectSlug(project.name)}"
+      data-project-link="${esc(project.name)}"
+      data-drop-project="${esc(project.name)}">
+      <span class="dot"></span><span>${esc(project.name)}</span><strong>${entriesForProject(project.name).filter((entry) => !(entry.todo === 'PROJ' && entry.title === project.name)).length || ''}</strong>
+    </a>
+  `).join('');
+}
+
+function renderStorage() {
+  if (!state || !els.storagePrimary) return;
+  const storage = state.storage || {};
+  const files = state.files || {};
+  els.storagePrimary.textContent = storage.primary === 'sqlite' ? 'SQLite' : (storage.primary || 'SQLite');
+  els.storageExport.textContent = files.export || 'Org export';
+  els.storageDb.textContent = files.db || '';
+}
+
+function setSettingsOpen(open) {
+  if (!els.settingsPanel) return;
+  els.settingsPanel.hidden = !open;
+  els.settings?.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function settingsStatus(message, kind = '') {
+  if (!els.exportStatus) return;
+  els.exportStatus.hidden = false;
+  els.exportStatus.textContent = message;
+  els.exportStatus.className = `settings-status ${kind}`.trim();
+}
+
+function renderTags() {
+  const tags = state.groups.tags || [];
+  if (!els.tagList) return;
+  const total = tags.reduce((sum, tag) => sum + tag.count, 0);
+  const buttons = [
+    { name: 'all', label: 'All', count: total },
+    ...tags.map((tag) => ({ name: tag.name, label: tag.name === '-' ? 'No Tags' : tag.name, count: tag.count })),
+  ];
+  els.tagList.innerHTML = buttons.map((tag) => `
+    <button class="tag-button ${tagFilter === tag.name ? 'active' : ''}" type="button" data-tag-filter="${esc(tag.name)}">
+      <span>${esc(tag.label)}</span><strong>${tag.count || ''}</strong>
+    </button>
+  `).join('');
+}
+
+function optionsHtml(options, selected, labelFor = (value) => value) {
+  return options.map((value) =>
+    `<option value="${esc(value)}" ${selected === value ? 'selected' : ''}>${esc(labelFor(value))}</option>`
+  ).join('');
+}
+
+function metadataFiltersHtml() {
+  if (!['next', 'focus', 'project', 'review'].includes(currentView)) return '';
+  return `
+    <select class="meta-filter" data-meta-filter="time" aria-label="Filter by available time">
+      <option value="all" ${timeFilter === 'all' ? 'selected' : ''}>Any time</option>
+      ${optionsHtml(TIME_OPTIONS.filter(Boolean), timeFilter, (value) => `≤ ${TIME_LABELS[value] || value}`)}
+    </select>
+    <select class="meta-filter" data-meta-filter="energy" aria-label="Filter by available energy">
+      <option value="all" ${energyFilter === 'all' ? 'selected' : ''}>Any energy</option>
+      ${optionsHtml(ENERGY_OPTIONS.filter(Boolean), energyFilter, (value) => ENERGY_LABELS[value] || value)}
+    </select>
+  `;
+}
+
+function areaChipsHtml() {
+  if (!['next', 'review'].includes(currentView)) return '';
+  return [
+    ['all', 'All'],
+    ['work', 'Work'],
+    ['parttime', 'Part-Time'],
+    ['learn', 'Learn'],
+    ['other', 'Other'],
+  ].map(([value, label]) =>
+    `<button class="chip ${areaFilter === value ? 'active' : ''}" type="button" data-area="${value}">${esc(label)}</button>`
+  ).join('');
+}
+
+function renderChips() {
+  const tools = `
+    <div class="view-tools" role="group" aria-label="View options">
+      <button class="note-toggle ${noteMode === 'hide' ? 'active' : ''}" type="button" data-note-mode="hide" title="Hide notes">-</button>
+      <button class="note-toggle ${noteMode === 'preview' ? 'active' : ''}" type="button" data-note-mode="preview" title="Preview notes">=</button>
+      <button class="note-toggle ${noteMode === 'full' ? 'active' : ''}" type="button" data-note-mode="full" title="Show full notes">list</button>
+    </div>
+  `;
+  const metadataFilters = metadataFiltersHtml();
+  const areaChips = areaChipsHtml();
+  if (!areaChips && !metadataFilters && ['inbox', 'trash'].includes(currentView)) {
+    els.chips.hidden = true;
+    els.chips.innerHTML = '';
+    return;
+  }
+  els.chips.hidden = false;
+  els.chips.innerHTML = `${areaChips}${metadataFilters}${tools}`;
+}
+
+function progress(entry, statsOverride = null) {
+  const stats = statsOverride || (entry.todo === 'PROJ' ? projectProgressStats(entry.title) : entry.subtasks);
+  if (!stats || !stats.total) return '';
+  const badges = [
+    `<span>${stats.open} open</span>`,
+    stats.projects ? `<span>${stats.projects} project${stats.projects === 1 ? '' : 's'}</span>` : '',
+  ].join('');
+  return `
+    <div class="progress">
+      <div class="progress-head"><span>Process</span><strong>${stats.done}/${stats.total} done</strong></div>
+      <div class="track"><span style="width:${stats.percent}%"></span></div>
+      <div class="badges">${badges}</div>
+    </div>
+  `;
+}
+
+function shortDate(value) {
+  if (!value) return '';
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function dateBucket(entry) {
+  if (!entry.scheduled) return 'No Date';
+  const date = new Date(`${entry.scheduled}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return 'No Date';
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const day = today.getDay() || 7;
+  const thisWeek = new Date(today);
+  thisWeek.setDate(today.getDate() - day + 1);
+  const nextWeek = new Date(thisWeek);
+  nextWeek.setDate(thisWeek.getDate() + 7);
+  const twoWeeks = new Date(nextWeek);
+  twoWeeks.setDate(nextWeek.getDate() + 7);
+  if (date.getTime() === today.getTime()) return 'Today';
+  if (date >= today && date < nextWeek) return 'This Week';
+  if (date >= nextWeek && date < twoWeeks) return 'Next Week';
+  return 'Future Dates';
+}
+
+function closedBucket(entry) {
+  if (!entry.closed) return 'Older';
+  const date = new Date(`${entry.closed}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return 'Older';
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const weekStart = new Date(today);
+  weekStart.setDate(today.getDate() - ((today.getDay() || 7) - 1));
+  const lastWeekStart = new Date(weekStart);
+  lastWeekStart.setDate(weekStart.getDate() - 7);
+  if (date.getTime() === today.getTime()) return 'Today';
+  if (date >= weekStart) return 'This Week';
+  if (date >= lastWeekStart) return 'Last Week';
+  return 'Older';
+}
+
+function areaBucket(entry) {
+  if (entry.list === 'scheduled') return 'Scheduled';
+  if (entry.list === 'waiting' || entry.todo === 'WAIT') return 'Waiting';
+  if (entry.list === 'someday') return 'Someday';
+  if (entry.list === 'later') return 'Later';
+  if (entry.list === 'inbox') return 'Inbox';
+  return 'Next Up';
+}
+
+function meta(entry) {
+  const displayProject = entry.project || (currentView === 'project' && entry.todo !== 'PROJ' ? effectiveProjectName() : '');
+  const values = [
+    entry.scheduled ? `<span><i class="metaicon scheduled"></i>Scheduled ${shortDate(entry.scheduled)}</span>` : '',
+    entry.due ? `<span><i class="metaicon due"></i>Due ${shortDate(entry.due)}</span>` : '',
+    entry.effort ? `<span><i class="metaicon etime"></i>${esc(entry.effort)}</span>` : '',
+    entry.energy ? `<span><i class="metaicon energy"></i>${esc(ENERGY_LABELS[entry.energy] || entry.energy)}</span>` : '',
+    displayProject ? `<span><i class="metaicon belongsto"></i>${esc(displayProject)}</span>` : '',
+    entry.closed ? `<span>Closed ${esc(entry.closed)}</span>` : '',
+  ].filter(Boolean);
+  return values.length ? `<div class="meta">${values.join('')}</div>` : '';
+}
+
+function taskTags(entry) {
+  const tags = entry.tags || [];
+  if (!tags.length) return '';
+  return tags.map((tag) => `<span class="task-tag">${esc(tag)}</span>`).join('');
+}
+
+function noteHtml(entry) {
+  if (!entry.notes || noteMode === 'hide') return '';
+  const text = noteMode === 'preview'
+    ? entry.notes.split('\n').find((line) => line.trim()) || ''
+    : entry.notes;
+  const value = noteMode === 'preview' && text.length > 180 ? `${text.slice(0, 180)}...` : text;
+  return `<div class="task-note">${htmlLines(value)}</div>`;
+}
+
+function actionButtons(entry) {
+  if (entry.trashed) {
+    return `
+      <div class="actions trash-actions">
+        <button type="button" data-action="RESTORE" data-id="${entry.id}">Restore</button>
+        <button class="danger" type="button" data-action="DELETE" data-id="${entry.id}">Delete</button>
+      </div>
+    `;
+  }
+  if (!entry.isCurrent) return '';
+  return `
+    <div class="actions">
+      <button class="row-menu-button" type="button" data-action="MENU" data-id="${entry.id}" aria-label="Task menu"></button>
+    </div>
+  `;
+}
+
+function checkbox(entry) {
+  if (!entry.isCurrent || entry.todo === 'DONE' || entry.todo === 'CANCELLED') {
+    return '<span class="check"></span>';
+  }
+  return `<button class="check" type="button" data-action="DONE" data-id="${entry.id}" aria-label="Mark done"></button>`;
+}
+
+function focusStar(entry) {
+  if (!entry.isCurrent || entry.trashed) return '<span class="star"></span>';
+  const label = entry.focus ? 'Remove from focus' : 'Add to focus';
+  return `<button class="star ${entry.focus ? 'active' : ''}" type="button" data-action="FOCUS" data-focus="${entry.focus ? '0' : '1'}" data-id="${entry.id}" aria-label="${label}"></button>`;
+}
+
+function option(value, label, selected) {
+  return `<option value="${value}" ${selected === value ? 'selected' : ''}>${esc(label)}</option>`;
+}
+
+function tagsText(entry) {
+  return (entry.tags || []).join(', ');
+}
+
+function editTask(entry) {
+  return `
+    <form class="task edit-task" data-edit-form data-id="${entry.id}" data-task-title="${esc(entry.title)}">
+      <div class="task-controls edit-controls">
+        <span class="grip" aria-hidden="true"></span>
+        <span class="check"></span>
+        ${focusStar(entry)}
+      </div>
+      <div class="task-main edit-main">
+        <input class="title-input" name="title" value="${esc(entry.title)}" autocomplete="off" placeholder="To Do">
+        <input name="tags" value="${esc(tagsText(entry))}" autocomplete="off" placeholder="Tags (contexts) comma separated">
+        <textarea name="notes" rows="8" placeholder="Notes">${esc(entry.notes || '')}</textarea>
+        <div class="edit-actions">
+          <button type="submit">Save Changes</button>
+          <button type="button" data-action="CANCEL_EDIT" data-id="${entry.id}">Cancel</button>
+        </div>
+      </div>
+      <div class="edit-side">
+        <label><span>time</span><select name="effort">
+          ${TIME_OPTIONS.map((value) => option(value, value || 'time', entry.effort || '')).join('')}
+        </select></label>
+        <label><span>energy</span><select name="energy">
+          ${ENERGY_OPTIONS.map((value) => option(value, value ? (ENERGY_LABELS[value] || value) : 'energy', entry.energy || '')).join('')}
+        </select></label>
+        <label><span>due</span><input name="dueAt" type="date" value="${esc(entry.due || '')}"></label>
+        <label><span>list</span><select name="list">
+          ${Object.entries(LIST_LABELS).map(([value, label]) => option(value, label, entry.list || 'next')).join('')}
+        </select></label>
+        <label><span>scheduled</span><input name="scheduledAt" type="date" value="${esc(entry.scheduled || '')}"></label>
+        <label><span>area</span><select name="area">
+          ${Object.entries(AREA_LABELS).map(([value, label]) => option(value, label, entry.area || 'other')).join('')}
+        </select></label>
+        <label><span>project</span><input name="project" value="${esc(entry.project || '')}" placeholder="Standalone"></label>
+      </div>
+    </form>
+  `;
+}
+
+function taskMenu(entry) {
+  if (menuId !== entry.id || entry.trashed || !entry.isCurrent) return '';
+  const menuItem = (action, label, value = '') =>
+    `<button type="button" data-action="${action}" data-id="${entry.id}" data-value="${esc(value)}">${label}</button>`;
+  const textItem = (action, label, value = '') => menuItem(action, esc(label), value);
+  const submenu = (label, items) => `
+    <div class="menu-row has-submenu">
+      <button class="menu-parent" type="button">${esc(label)}</button>
+      <div class="menu-flyout">${items}</div>
+    </div>
+  `;
+  const currentTags = entry.tags || [];
+  const contextTags = [
+    ...new Set([
+      ...currentTags,
+      ...(state.groups.tags || []).map((tag) => tag.name).filter((tag) => tag && tag !== '-'),
+      ...DEFAULT_CONTEXT_TAGS,
+    ]),
+  ].slice(0, 16);
+  const areaItems = [
+    '<span class="menu-label">Area</span>',
+    ...Object.entries(AREA_LABELS)
+      .map(([value, label]) => textItem('SET_AREA', `${entry.area === value ? '• ' : ''}${label}`, value)),
+  ].join('');
+  const contextItems = [
+    '<span class="menu-label">Contexts</span>',
+    ...contextTags.map((tag) => textItem('ADD_TAG', currentTags.includes(tag) ? `✓ ${tag}` : tag, tag)),
+    textItem('CLEAR_TAGS', 'No Context / Clear', ''),
+  ].join('');
+  const listItems = [
+    '<span class="menu-label">State</span>',
+    textItem('SET_LIST', entry.list === 'inbox' ? '• Inbox' : 'Inbox', 'inbox'),
+    textItem('SET_LIST', entry.list === 'next' ? '• Next' : 'Next', 'next'),
+    textItem('SET_LIST', entry.list === 'later' ? '• Later' : 'Later', 'later'),
+    textItem('SET_LIST', entry.list === 'waiting' ? '• Waiting' : 'Waiting', 'waiting'),
+    textItem('SET_LIST', entry.list === 'scheduled' ? '• Scheduled' : 'Scheduled', 'scheduled'),
+    textItem('SET_LIST', entry.list === 'someday' ? '• Someday' : 'Someday', 'someday'),
+  ].join('');
+  const projectItems = (state.groups.projects || [])
+    .map((project) => textItem('SET_PROJECT', entry.project === project.name ? `• ${project.name}` : project.name, project.name))
+    .join('');
+  const moveItems = [
+    projectItems ? submenu('Projects', projectItems) : '',
+    textItem('LOGBOOK', 'Logbook'),
+    textItem('TRASH', 'Trash'),
+  ].join('');
+  const timeItems = [
+    '<span class="menu-label">Time</span>',
+    ...TIME_OPTIONS.filter(Boolean).map((value) => textItem('SET_TIME', TIME_LABELS[value] || value, value)),
+    textItem('SET_TIME', 'None', ''),
+  ].join('');
+  const energyItems = [
+    '<span class="menu-label">Energy</span>',
+    ...ENERGY_OPTIONS.filter(Boolean).map((value) => textItem('SET_ENERGY', ENERGY_LABELS[value] || value, value)),
+    textItem('SET_ENERGY', 'None', ''),
+  ].join('');
+  return `
+    <div class="task-menu" role="menu">
+      <span class="menu-title">${esc(entry.title)}</span>
+      ${submenu('State', listItems)}
+      ${submenu('Areas', areaItems)}
+      ${submenu('Contexts', contextItems)}
+      ${submenu('Time', timeItems)}
+      ${submenu('Energy', energyItems)}
+      ${submenu('Due', `${textItem('SET_DUE', 'Today', relativeDate(0))}${textItem('SET_DUE', 'Tomorrow', relativeDate(1))}${textItem('SET_DUE', 'Next Week', nextWeekDate())}${textItem('SET_DUE', 'Remove Date', '')}`)}
+      ${submenu('Schedule', `${textItem('SET_SCHEDULE', 'Tomorrow', relativeDate(1))}${textItem('SET_SCHEDULE', 'Next Week', nextWeekDate())}${entry.scheduled ? textItem('SET_SCHEDULE', 'Remove Start Date', '') : ''}`)}
+      ${submenu('Move', moveItems)}
+      ${submenu('Convert', `${textItem('CONVERT_PROJECT', 'Action into a → Project')}`)}
+      <button class="menu-row" type="button" data-action="COPY" data-id="${entry.id}">Make a copy...</button>
+      <button class="menu-row menu-info" type="button" data-action="INFO" data-id="${entry.id}">get_info</button>
+    </div>
+  `;
+}
+
+function task(entry) {
+  if (editingId === entry.id) return editTask(entry);
+  const isProject = entry.todo === 'PROJ';
+  const visibleState = entry.todo && entry.todo !== 'TODO'
+    ? `<span class="state state-${entry.todo.toLowerCase()}">${esc(entry.todo)}</span>`
+    : '';
+  const note = entry.notes || entry.subtasks?.total ? '<span class="note-mark" aria-label="Has notes or project actions"></span>' : '';
+  const date = entry.scheduled ? `<span class="date-chip">${esc(shortDate(entry.scheduled))}</span>` : '';
+  const canDrag = entry.isCurrent && !entry.trashed;
+  const title = isProject && entry.isCurrent
+    ? `<a class="project-title-link" href="#project/${projectSlug(entry.title)}" data-project-open="${esc(entry.title)}">${esc(entry.title)}</a>`
+    : `<h3 class="task-title">${esc(entry.title)}</h3>`;
+  return `
+    <article class="task ${isProject ? 'project-task' : ''} ${entry.focus ? 'focus-state' : ''} ${menuId === entry.id ? 'menu-open' : ''} ${draggingId === entry.id ? 'dragging' : ''} ${dragOverId === entry.id && dragPosition ? `drop-${dragPosition}` : ''}" data-task-id="${entry.id}" data-task-title="${esc(entry.title)}" data-draggable="${canDrag ? 'true' : 'false'}">
+      <div class="task-controls">
+        <span class="grip" role="button" aria-label="Drag task" title="Drag task"></span>
+        ${checkbox(entry)}
+        ${focusStar(entry)}
+      </div>
+      <div class="task-main">
+        <div class="title-row">${visibleState}${date}${title}${note}</div>
+        ${meta(entry)}
+        ${noteHtml(entry)}
+        ${progress(entry)}
+      </div>
+      <div class="task-tags">${taskTags(entry)}</div>
+      <div class="task-menu-cell">${actionButtons(entry)}</div>
+      ${taskMenu(entry)}
+    </article>
+  `;
+}
+
+function emptyCard(title) {
+  return `
+    <div class="empty-card">
+      <h2>${esc(title)}</h2>
+      <p>Press <kbd>n</kbd> to create a new action.</p>
+    </div>
+  `;
+}
+
+function renderGrouped(entries, bucketFn, order) {
+  const buckets = new Map();
+  for (const entry of entries) {
+    const label = bucketFn(entry);
+    if (!buckets.has(label)) buckets.set(label, []);
+    buckets.get(label).push(entry);
+  }
+  const labels = [
+    ...order.filter((label) => buckets.has(label)),
+    ...[...buckets.keys()].filter((label) => !order.includes(label)).sort(),
+  ];
+  return labels.map((label) => `
+    <div class="section-title"><h2>${esc(label)}</h2><span>${buckets.get(label).length}</span></div>
+    <div class="items">${buckets.get(label).map(task).join('')}</div>
+  `).join('');
+}
+
+function projectBucket(entry) {
+  if (entry.todo === 'PROJ') return 'Project';
+  if (entry.todo === 'DONE' || entry.todo === 'CANCELLED') return 'Done';
+  if (entry.list === 'someday') return 'Someday';
+  if (entry.list === 'later') return 'Later';
+  if (entry.list === 'scheduled') return 'Scheduled';
+  if (entry.list === 'waiting' || entry.todo === 'WAIT') return 'Waiting';
+  if (entry.list === 'inbox') return 'Inbox';
+  return 'Next Up';
+}
+
+function projectSummaryCard(projectName, entries) {
+  const projectEntry = entries.find((entry) => entry.todo === 'PROJ' && entry.title === projectName);
+  const actions = projectActionEntries(projectName, entries);
+  const stats = projectProgressStats(projectName, entries);
+  const summary = projectEntry || {
+    title: projectName,
+    notes: '',
+    subtasks: stats,
+  };
+  const count = actions.length;
+  return `
+    <article class="project-summary-card" data-project-summary="${esc(projectName)}">
+      <div class="project-summary-count">
+        <strong>${count}</strong>
+        <span>${count === 1 ? 'Action' : 'Actions'}</span>
+      </div>
+      <div class="project-summary-main">
+        <div class="project-summary-title">
+          <span class="state state-proj">PROJ</span>
+          <h2>${esc(projectName)}</h2>
+          ${summary.notes || stats.total ? '<span class="note-mark" aria-label="Has project actions"></span>' : ''}
+        </div>
+        ${summary.notes ? `<div class="task-note">${htmlLines(summary.notes)}</div>` : ''}
+        ${progress(summary, stats)}
+      </div>
+      <a class="project-jump" href="#next" data-view-link="next" aria-label="Back to Next"></a>
+    </article>
+  `;
+}
+
+function renderProjectSummary(projectName, entries) {
+  if (!els.projectSummary) return;
+  if (currentView !== 'project' || !projectName) {
+    els.projectSummary.hidden = true;
+    els.projectSummary.innerHTML = '';
+    return;
+  }
+  els.projectSummary.hidden = false;
+  els.projectSummary.innerHTML = projectSummaryCard(projectName, entries);
+}
+
+function renderProjectItems(entries, projectName) {
+  const taskEntries = entries.filter((entry) => !(entry.todo === 'PROJ' && entry.title === projectName));
+  if (!taskEntries.length) return emptyCard('Project has no actions');
+  const buckets = new Map();
+  for (const entry of taskEntries) {
+    const label = projectBucket(entry);
+    if (!buckets.has(label)) buckets.set(label, []);
+    buckets.get(label).push(entry);
+  }
+  const order = ['Next Up', 'Waiting', 'Scheduled', 'Later', 'Someday', 'Inbox', 'Done'];
+  const labels = [
+    ...order.filter((label) => buckets.has(label)),
+    ...[...buckets.keys()].filter((label) => !order.includes(label)).sort(),
+  ];
+  return labels.map((label) => `
+    <div class="section-title project-section"><h2>${esc(label)}</h2><strong>${buckets.get(label).length}</strong></div>
+    <div class="items">${buckets.get(label).map(task).join('')}</div>
+  `).join('');
+}
+
+function statusSummary(label, value) {
+  return `<div class="status-card"><strong>${value}</strong><span>${esc(label)}</span></div>`;
+}
+
+function reviewBucket(entry) {
+  if (isDoneRecently(entry, 7)) return 'Done Last 7 Days';
+  if (entry.list === 'inbox') return 'Inbox To Clarify';
+  if (entry.todo === 'PROJ' && !projectHasNextAction(entry.title)) return 'Projects Needing Next Action';
+  if (entry.todo === 'PROJ') return 'Project Health';
+  if (entry.list === 'waiting' || entry.todo === 'WAIT') return 'Waiting';
+  if (entry.list === 'scheduled') return 'Scheduled';
+  if (isStaleOpen(entry)) return 'Stale Open Loops';
+  if (entry.list === 'later' || entry.list === 'someday') return 'Later / Someday';
+  return 'Other';
+}
+
+function renderReview(entries) {
+  const current = allCurrentEntries();
+  const completed = state.groups.completed || [];
+  const projects = projectRows();
+  const cards = [
+    statusSummary('Next actions', (state.groups.actions || []).length),
+    statusSummary('Open projects', projects.length),
+    statusSummary('Done last 7 days', completed.filter((entry) => isDoneRecently(entry, 7)).length),
+    statusSummary('Need review', entries.length),
+  ].join('');
+  const body = entries.length
+    ? renderGrouped(entries, reviewBucket, [
+      'Inbox To Clarify',
+      'Projects Needing Next Action',
+      'Project Health',
+      'Stale Open Loops',
+      'Waiting',
+      'Scheduled',
+      'Later / Someday',
+      'Done Last 7 Days',
+      'Other',
+    ])
+    : emptyCard('Nothing to review');
+  return `
+    <section class="status-grid">${cards}</section>
+    ${body}
+  `;
+}
+
+function projectCard(entry) {
+  const stats = projectProgressStats(entry.title);
+  const actions = projectActionEntries(entry.title);
+  const nextActions = actions.filter((item) => item.isCurrent && item.list === 'next' && item.todo !== 'PROJ');
+  const waiting = actions.filter((item) => item.isCurrent && (item.list === 'waiting' || item.todo === 'WAIT'));
+  return `
+    <article class="project-card" data-project-card="${esc(entry.title)}">
+      <a class="project-card-title" href="#project/${projectSlug(entry.title)}" data-project-open="${esc(entry.title)}">
+        <span class="state state-proj">PROJ</span>
+        <strong>${esc(entry.title)}</strong>
+      </a>
+      ${meta(entry)}
+      ${progress(entry, stats)}
+      <div class="project-card-footer">
+        <span>${nextActions.length} next</span>
+        <span>${waiting.length} waiting</span>
+        <span>${actions.length} total</span>
+      </div>
+    </article>
+  `;
+}
+
+function renderProjectsView(entries) {
+  if (!entries.length) return emptyCard('No active projects');
+  const groups = new Map();
+  for (const entry of entries) {
+    const label = AREA_LABELS[entry.area] || 'Other';
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push(entry);
+  }
+  return [...groups.entries()].map(([label, projects]) => `
+    <div class="section-title"><h2>${esc(label)}</h2><span>${projects.length}</span></div>
+    <div class="project-grid">${projects.map(projectCard).join('')}</div>
+  `).join('');
+}
+
+function renderItems(entries, view) {
+  if (currentView === 'project') {
+    return renderProjectItems(entries, effectiveProjectName());
+  }
+  if (currentView === 'projects') {
+    return renderProjectsView(entries);
+  }
+  if (currentView === 'review') {
+    return renderReview(entries);
+  }
+  if (currentView === 'scheduled') {
+    return renderGrouped(entries, dateBucket, ['Today', 'This Week', 'Next Week', 'Future Dates', 'No Date']);
+  }
+  if (currentView === 'logbook') {
+    return renderGrouped(entries, closedBucket, ['Today', 'This Week', 'Last Week', 'Older']);
+  }
+  if (view.area) {
+    return renderGrouped(entries, areaBucket, ['Next Up', 'Scheduled', 'Waiting', 'Later', 'Someday', 'Inbox']);
+  }
+  return `
+    <div class="section-title"><h2>${esc(view.section || 'Actions')}</h2><span>${entries.length}</span></div>
+    <div class="items">${entries.map(task).join('')}</div>
+  `;
+}
+
+function searchEmptyCard(query) {
+  return `
+    <div class="empty-card">
+      <h2>No results for "${esc(query)}"</h2>
+      <p>Clear search to see the current list.</p>
+      <button class="clear-search" type="button" data-clear-search>Clear Search</button>
+    </div>
+  `;
+}
+
+function render() {
+  if (!state) return;
+  const projectName = currentView === 'project' ? effectiveProjectName() : '';
+  if (currentView === 'project') currentProject = projectName;
+  const view = currentView === 'project'
+    ? { title: projectName || 'Project', subtitle: 'Project', empty: 'Project has no actions' }
+    : (VIEWS[currentView] || VIEWS.next);
+  const query = els.search.value.trim();
+  const entries = entriesForRender(query);
+  els.title.textContent = view.title;
+  els.subtitle.textContent = view.subtitle;
+  els.areaSelect.value = view.area || 'other';
+  document.body.classList.toggle('project-mode', currentView === 'project');
+  renderChips();
+  renderProjectSummary(projectName, currentView === 'project' ? entriesForProject(projectName) : []);
+  renderProjects();
+  renderTags();
+  document.querySelectorAll('[data-view-link]').forEach((link) => {
+    link.classList.toggle('active', link.dataset.viewLink === currentView);
+  });
+  document.querySelectorAll('[data-project-link]').forEach((link) => {
+    link.classList.toggle('active', currentView === 'project' && link.dataset.projectLink === projectName);
+  });
+  if (!entries.length && !['review', 'projects'].includes(currentView)) {
+    els.content.innerHTML = query ? searchEmptyCard(query) : emptyCard(view.empty);
+    return;
+  }
+  els.content.innerHTML = renderItems(entries, view);
+}
+
+function setView(view, replace = false) {
+  const projectName = projectFromHash(view);
+  if (projectName !== null) {
+    currentView = 'project';
+    currentProject = projectByName(projectName)?.name || firstProjectName() || projectName;
+  } else {
+    currentView = VIEWS[view] ? view : 'next';
+    currentProject = '';
+  }
+  resetViewState();
+  const hash = currentView === 'project' ? `#project/${projectSlug(effectiveProjectName())}` : `#${currentView}`;
+  if (replace) history.replaceState(null, '', hash);
+  else history.pushState(null, '', hash);
+  render();
+}
+
+async function load() {
+  els.content.innerHTML = '<div class="empty-card"><h2>Loading</h2><p>Reading task database...</p></div>';
+  const response = await fetch('/api/state', { cache: 'no-store' });
+  if (!response.ok) throw new Error('Failed to load GTD state');
+  state = await response.json();
+  setCounts();
+  renderStorage();
+  setView((location.hash || '#next').slice(1), true);
+}
+
+async function mutate(url, options) {
+  const response = await fetch(url, {
+    headers: { 'content-type': 'application/json' },
+    ...options,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.ok === false) {
+    throw new Error(body.error || 'Action failed');
+  }
+  editingId = null;
+  menuId = null;
+  if (body.export?.ok) settingsStatus(`Exported ${body.export.file}`, 'ok');
+  if (body.export && body.export.ok === false) settingsStatus(`Export failed: ${body.export.error}`, 'error');
+  await load();
+  return body;
+}
+
+function patchTask(id, body) {
+  return mutate(`/api/tasks/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+}
+
+function clearDragMarkers() {
+  dragOverId = null;
+  dragPosition = null;
+  document.querySelectorAll('.task.drop-before, .task.drop-after').forEach((node) => {
+    node.classList.remove('drop-before', 'drop-after');
+  });
+  document.querySelectorAll('.drag-over-nav').forEach((node) => node.classList.remove('drag-over-nav'));
+}
+
+function orderedIdsForDrop(container, draggedId, targetId, position) {
+  const ids = [...container.querySelectorAll('.task[data-task-id]')]
+    .map((row) => row.dataset.taskId)
+    .filter((id) => id && id !== draggedId);
+  const targetIndex = ids.indexOf(targetId);
+  if (targetIndex === -1) return null;
+  ids.splice(position === 'after' ? targetIndex + 1 : targetIndex, 0, draggedId);
+  return ids;
+}
+
+async function reorderDrop(container, draggedId, targetId, position) {
+  const ids = orderedIdsForDrop(container, draggedId, targetId, position);
+  if (!ids) return;
+  await mutate('/api/tasks/reorder', {
+    method: 'PATCH',
+    body: JSON.stringify({ ids }),
+  });
+}
+
+function navDropTarget(target) {
+  return target?.closest?.('[data-drop-list], [data-drop-area], [data-drop-action], [data-drop-focus], [data-drop-project]') || null;
+}
+
+async function dropOnNavTarget(id, target) {
+  const entry = entryById(id);
+  if (!entry || !target) return;
+  if (target.dataset.dropList) {
+    const list = target.dataset.dropList;
+    await patchTask(id, {
+      list,
+      todo: todoForList(list),
+      scheduledAt: list === 'scheduled' && !entry.scheduled ? relativeDate(1) : undefined,
+    });
+    return;
+  }
+  if (target.dataset.dropArea) {
+    await patchTask(id, { area: target.dataset.dropArea });
+    return;
+  }
+  if (target.dataset.dropProject) {
+    await patchTask(id, { project: target.dataset.dropProject });
+    return;
+  }
+  if (target.dataset.dropFocus) {
+    await mutate(`/api/tasks/${id}/focus`, {
+      method: 'PATCH',
+      body: JSON.stringify({ focus: true }),
+    });
+    return;
+  }
+  if (target.dataset.dropAction === 'logbook') {
+    await mutate(`/api/tasks/${id}/logbook`, { method: 'POST' });
+    return;
+  }
+  if (target.dataset.dropAction === 'trash') {
+    await mutate(`/api/tasks/${id}/trash`, { method: 'POST' });
+  }
+}
+
+function pointerDropContext(clientX, clientY) {
+  const target = document.elementFromPoint(clientX, clientY);
+  const navTarget = navDropTarget(target);
+  if (navTarget) return { type: 'nav', target: navTarget };
+  const row = target?.closest?.('.task[data-task-id]');
+  const container = row?.closest('.items');
+  if (row && container && row.dataset.taskId !== draggingId) {
+    const rect = row.getBoundingClientRect();
+    return {
+      type: 'row',
+      row,
+      container,
+      targetId: row.dataset.taskId,
+      position: clientY > rect.top + rect.height / 2 ? 'after' : 'before',
+    };
+  }
+  return { type: 'none' };
+}
+
+function updatePointerDragMarkers(context) {
+  clearDragMarkers();
+  if (context.type === 'nav') {
+    context.target.classList.add('drag-over-nav');
+    return;
+  }
+  if (context.type === 'row') {
+    dragOverId = context.targetId;
+    dragPosition = context.position;
+    context.row.classList.add(`drop-${context.position}`);
+  }
+}
+
+function finishPointerDrag(event) {
+  const drag = pointerDrag;
+  if (!drag) return null;
+  pointerDrag = null;
+  drag.grip?.releasePointerCapture?.(event?.pointerId ?? drag.pointerId);
+  document.body.classList.remove('is-dragging-task');
+  return drag;
+}
+
+function resetDraggingUi({ rerender = false } = {}) {
+  draggingId = null;
+  clearDragMarkers();
+  document.querySelectorAll('.task.dragging').forEach((node) => node.classList.remove('dragging'));
+  if (rerender) render();
+}
+
+function focusRapidEntry(view = currentView) {
+  if (view !== currentView) setView(view);
+  els.titleInput.focus();
+}
+
+function showShortcuts() {
+  window.alert([
+    'Create: n, Shift+n',
+    'Create in list: i inbox, x next, f focus, p project area',
+    'Navigate: 1 inbox, 2 focus, 3 next, 4 projects, 5 review, 6 work, 7 part-time, 8 learning, 9 logbook, 0 trash',
+    'Search: /',
+    'Shortcuts: k',
+    'Close menu/edit: Esc',
+  ].join('\n'));
+}
+
+document.querySelectorAll('[data-view-link]').forEach((link) => {
+  link.addEventListener('click', (event) => {
+    event.preventDefault();
+    setView(link.dataset.viewLink);
+  });
+});
+
+document.addEventListener('click', (event) => {
+  const projectLink = event.target.closest('[data-project-link]');
+  if (projectLink) {
+    event.preventDefault();
+    setView(`project/${projectSlug(projectLink.dataset.projectLink)}`);
+    return;
+  }
+  const projectOpen = event.target.closest('[data-project-open]');
+  if (projectOpen) {
+    event.preventDefault();
+    setView(`project/${projectSlug(projectOpen.dataset.projectOpen)}`);
+    return;
+  }
+  const viewLink = event.target.closest('[data-view-link]');
+  if (viewLink && !viewLink.matches('.rail-link, .footer-link, .brand')) {
+    event.preventDefault();
+    setView(viewLink.dataset.viewLink);
+  }
+});
+
+window.addEventListener('popstate', () => {
+  setView((location.hash || '#next').slice(1), true);
+});
+
+window.addEventListener('hashchange', () => {
+  setView((location.hash || '#next').slice(1), true);
+});
+
+els.search.addEventListener('input', render);
+
+els.chips.addEventListener('click', (event) => {
+  const area = event.target.closest('[data-area]');
+  if (area) {
+    areaFilter = area.dataset.area;
+    render();
+    return;
+  }
+  const note = event.target.closest('[data-note-mode]');
+  if (note) {
+    noteMode = note.dataset.noteMode;
+    localStorage.setItem('gtd-note-mode', noteMode);
+    render();
+  }
+});
+
+els.chips.addEventListener('change', (event) => {
+  const filter = event.target.closest('[data-meta-filter]');
+  if (!filter) return;
+  if (filter.dataset.metaFilter === 'time') timeFilter = filter.value;
+  if (filter.dataset.metaFilter === 'energy') energyFilter = filter.value;
+  render();
+});
+
+els.tagList?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-tag-filter]');
+  if (!button) return;
+  tagFilter = button.dataset.tagFilter;
+  render();
+});
+
+document.querySelector('#new-item').addEventListener('click', () => {
+  focusRapidEntry();
+});
+
+els.settings?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  renderStorage();
+  setSettingsOpen(els.settingsPanel.hidden);
+});
+
+els.settingsClose?.addEventListener('click', () => {
+  setSettingsOpen(false);
+});
+
+els.exportOrg?.addEventListener('click', async () => {
+  els.exportOrg.disabled = true;
+  settingsStatus('Exporting');
+  try {
+    const response = await fetch('/api/export/org', { method: 'POST' });
+    const body = await response.json();
+    if (!response.ok || body.ok === false) throw new Error(body.error || 'Export failed');
+    settingsStatus(`Exported ${body.file}`, 'ok');
+    await load();
+  } catch (error) {
+    settingsStatus(error.message, 'error');
+  } finally {
+    els.exportOrg.disabled = false;
+  }
+});
+
+els.content.addEventListener('pointerdown', (event) => {
+  const grip = event.target.closest('.grip');
+  const row = grip?.closest?.('.task[data-task-id]');
+  if (!row || row.dataset.draggable !== 'true' || event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  grip.setPointerCapture?.(event.pointerId);
+  pointerDrag = {
+    id: row.dataset.taskId,
+    pointerId: event.pointerId,
+    grip,
+    startX: event.clientX,
+    startY: event.clientY,
+    active: false,
+  };
+  document.body.classList.add('is-dragging-task');
+});
+
+document.addEventListener('pointermove', (event) => {
+  if (!pointerDrag || pointerDrag.pointerId !== event.pointerId) return;
+  event.preventDefault();
+  const dx = Math.abs(event.clientX - pointerDrag.startX);
+  const dy = Math.abs(event.clientY - pointerDrag.startY);
+  if (!pointerDrag.active && dx + dy < DRAG_START_DISTANCE) return;
+  if (!pointerDrag.active) {
+    pointerDrag.active = true;
+    menuId = null;
+    editingId = null;
+  }
+  draggingId = pointerDrag.id;
+  const row = document.querySelector(`.task[data-task-id="${draggingId}"]`);
+  row?.classList.add('dragging');
+  updatePointerDragMarkers(pointerDropContext(event.clientX, event.clientY));
+});
+
+document.addEventListener('pointerup', async (event) => {
+  if (!pointerDrag || pointerDrag.pointerId !== event.pointerId) return;
+  const drag = finishPointerDrag(event);
+  event.preventDefault();
+  if (!drag.active) {
+    resetDraggingUi();
+    return;
+  }
+  const context = pointerDropContext(event.clientX, event.clientY);
+  resetDraggingUi();
+  try {
+    if (context.type === 'nav') {
+      await dropOnNavTarget(drag.id, context.target);
+    } else if (context.type === 'row') {
+      await reorderDrop(context.container, drag.id, context.targetId, context.position);
+    } else {
+      render();
+    }
+  } catch (error) {
+    els.content.innerHTML = `<div class="empty-card"><h2>Drag failed</h2><p>${esc(error.message)}</p></div>`;
+  }
+});
+
+document.addEventListener('pointercancel', (event) => {
+  if (!pointerDrag || pointerDrag.pointerId !== event.pointerId) return;
+  finishPointerDrag(event);
+  resetDraggingUi({ rerender: true });
+});
+
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.task-menu') && !event.target.closest('[data-action="MENU"]')) {
+    if (menuId) {
+      menuId = null;
+      render();
+    }
+  }
+  if (!event.target.closest('#settings-panel') && !event.target.closest('#settings')) {
+    setSettingsOpen(false);
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  const tag = event.target?.tagName?.toLowerCase();
+  const inField = ['input', 'textarea', 'select'].includes(tag);
+  if (event.key === 'Escape') {
+    if (editingId || menuId) {
+      event.preventDefault();
+      editingId = null;
+      menuId = null;
+      render();
+      return;
+    }
+    if (event.target === els.titleInput) {
+      els.titleInput.value = '';
+      els.titleInput.blur();
+      return;
+    }
+  }
+  if (inField) return;
+
+  const key = event.key.toLowerCase();
+  const navByNumber = {
+    1: 'inbox',
+    2: 'focus',
+    3: 'next',
+    4: 'projects',
+    5: 'review',
+    6: 'work',
+    7: 'parttime',
+    8: 'learn',
+    9: 'logbook',
+    0: 'trash',
+  };
+  if (navByNumber[event.key]) {
+    event.preventDefault();
+    setView(navByNumber[event.key]);
+    return;
+  }
+  if (event.key === '[' || event.key === ']') {
+    event.preventDefault();
+    const index = VIEW_ORDER.indexOf(currentView);
+    const direction = event.key === ']' ? 1 : -1;
+    const next = (index + direction + VIEW_ORDER.length) % VIEW_ORDER.length;
+    setView(VIEW_ORDER[next]);
+    return;
+  }
+  if (key === '/') {
+    event.preventDefault();
+    els.search.focus();
+    return;
+  }
+  if (key === 'k' || key === 'h') {
+    event.preventDefault();
+    showShortcuts();
+    return;
+  }
+  if (key === 'n') {
+    event.preventDefault();
+    focusRapidEntry();
+    return;
+  }
+  const createTargets = {
+    i: 'inbox',
+    f: 'focus',
+    x: 'next',
+    p: 'work',
+  };
+  if (key === 'l' && event.shiftKey) createTargets.l = 'later';
+  const targetView = createTargets[key];
+  if (targetView) {
+    event.preventDefault();
+    focusRapidEntry(targetView);
+  }
+});
+
+els.titleInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.isComposing) {
+    event.preventDefault();
+    els.form.requestSubmit();
+    return;
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    els.titleInput.value = '';
+    els.titleInput.blur();
+  }
+});
+
+els.form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const title = els.titleInput.value.trim();
+  if (!title) return;
+  els.addStatus.hidden = false;
+  els.addStatus.textContent = 'Saving';
+  els.addStatus.className = '';
+  try {
+    const list = listForCurrentView();
+    const tags = tagFilter && !['all', '-'].includes(tagFilter) ? [tagFilter] : undefined;
+    const project = currentView === 'project' ? effectiveProjectName() : undefined;
+    await mutate('/api/tasks', {
+      method: 'POST',
+      body: JSON.stringify({ title, area: els.areaSelect.value, list, focus: currentView === 'focus', tags, project }),
+    });
+    els.titleInput.value = '';
+  } catch (error) {
+    els.addStatus.textContent = error.message;
+    els.addStatus.className = 'error';
+  } finally {
+    setTimeout(() => {
+      els.addStatus.hidden = true;
+    }, 1200);
+  }
+});
+
+els.content.addEventListener('click', async (event) => {
+  if (event.target.closest('[data-clear-search]')) {
+    els.search.value = '';
+    render();
+    els.search.focus();
+    return;
+  }
+  const button = event.target.closest('[data-action]');
+  const menuParent = event.target.closest('.menu-parent');
+  if (!button && menuParent) {
+    event.stopPropagation();
+    const row = menuParent.closest('.has-submenu');
+    row?.classList.toggle('submenu-open');
+    return;
+  }
+  if (!button) return;
+  event.stopPropagation();
+  const { action, id } = button.dataset;
+  const entry = entryById(id);
+  if (action === 'MENU') {
+    menuId = menuId === id ? null : id;
+    editingId = null;
+    render();
+    return;
+  }
+  if (action === 'EDIT') {
+    editingId = id;
+    menuId = null;
+    render();
+    return;
+  }
+  if (action === 'CANCEL_EDIT') {
+    editingId = null;
+    render();
+    return;
+  }
+  if (action === 'INFO') {
+    window.alert([
+      entry?.title || id,
+      entry?.project ? `Project: ${entry.project}` : '',
+      entry?.tags?.length ? `Tags: ${entry.tags.join(', ')}` : '',
+      entry?.created ? `Created: ${entry.created}` : '',
+      entry?.closed ? `Closed: ${entry.closed}` : '',
+      entry?.file ? `Source: ${entry.file}:${entry.line || 1}` : 'Source: UI database',
+    ].filter(Boolean).join('\n'));
+    menuId = null;
+    render();
+    return;
+  }
+  if (action === 'EMAIL') {
+    const subject = encodeURIComponent(entry?.title || 'GTD action');
+    const body = encodeURIComponent([entry?.title || '', entry?.notes || ''].filter(Boolean).join('\n\n'));
+    window.location.href = `mailto:?subject=${subject}&body=${body}`;
+    return;
+  }
+  if (action === 'REPEAT' || action === 'MANAGE_AREAS' || action === 'MANAGE_CONTEXTS') {
+    const messages = {
+      REPEAT: 'Repeating tasks are not modeled yet. Use Schedule Start Date for now.',
+      MANAGE_AREAS: 'Areas are Work, Part-Time, Learning, and Other in this GTD setup.',
+      MANAGE_CONTEXTS: 'Contexts are represented as tags for now.',
+    };
+    window.alert(messages[action]);
+    menuId = null;
+    render();
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    if (action === 'FOCUS') {
+      await mutate(`/api/tasks/${id}/focus`, {
+        method: 'PATCH',
+        body: JSON.stringify({ focus: button.dataset.focus === '1' }),
+      });
+    } else if (action === 'SET_LIST') {
+      const list = button.dataset.value;
+      await patchTask(id, {
+        list,
+        todo: todoForList(list),
+        scheduledAt: list === 'scheduled'
+          ? (entry?.scheduled || relativeDate(1))
+          : (entry?.scheduled && entry?.list === 'scheduled' ? '' : entry?.scheduled),
+      });
+    } else if (action === 'SET_TIME') {
+      await patchTask(id, { effort: button.dataset.value });
+    } else if (action === 'SET_ENERGY') {
+      await patchTask(id, { energy: button.dataset.value });
+    } else if (action === 'SET_DUE') {
+      await patchTask(id, { dueAt: button.dataset.value });
+    } else if (action === 'SET_AREA') {
+      await patchTask(id, { area: button.dataset.value });
+    } else if (action === 'SET_PROJECT') {
+      await patchTask(id, { project: button.dataset.value });
+    } else if (action === 'ADD_TAG') {
+      const value = button.dataset.value;
+      const tags = new Set(entry?.tags || []);
+      if (tags.has(value)) tags.delete(value);
+      else tags.add(value);
+      await patchTask(id, { tags: [...tags] });
+    } else if (action === 'CLEAR_TAGS') {
+      await patchTask(id, { tags: [] });
+    } else if (action === 'SET_SCHEDULE') {
+      const value = button.dataset.value;
+      await patchTask(id, {
+        scheduledAt: value,
+        list: value ? 'scheduled' : (entry?.list === 'scheduled' ? 'next' : entry?.list || 'next'),
+        todo: entry?.list === 'waiting' ? 'WAIT' : 'TODO',
+      });
+    } else if (action === 'LOGBOOK') {
+      await mutate(`/api/tasks/${id}/logbook`, { method: 'POST' });
+    } else if (action === 'COPY') {
+      await mutate(`/api/tasks/${id}/copy`, { method: 'POST' });
+    } else if (action === 'CONVERT_PROJECT') {
+      await mutate(`/api/tasks/${id}/convert/project`, { method: 'POST' });
+    } else if (action === 'TRASH') {
+      await mutate(`/api/tasks/${id}/trash`, { method: 'POST' });
+    } else if (action === 'RESTORE') {
+      await mutate(`/api/tasks/${id}/restore`, { method: 'POST' });
+    } else if (action === 'DELETE') {
+      await mutate(`/api/tasks/${id}`, { method: 'DELETE' });
+    } else {
+      await mutate(`/api/tasks/${id}/state`, {
+        method: 'PATCH',
+        body: JSON.stringify({ todo: action }),
+      });
+    }
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = 'Failed';
+    button.title = error.message;
+  }
+});
+
+els.content.addEventListener('dblclick', (event) => {
+  const row = event.target.closest('[data-task-id]');
+  if (!row) return;
+  editingId = row.dataset.taskId;
+  menuId = null;
+  render();
+});
+
+els.content.addEventListener('submit', async (event) => {
+  const form = event.target.closest('[data-edit-form]');
+  if (!form) return;
+  event.preventDefault();
+  const data = new FormData(form);
+  const tags = String(data.get('tags') || '')
+    .split(',')
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+  const list = data.get('list');
+  const body = {
+    title: data.get('title'),
+    todo: todoForList(list),
+    list,
+    area: data.get('area'),
+    effort: data.get('effort'),
+    scheduledAt: data.get('scheduledAt'),
+    dueAt: data.get('dueAt'),
+    energy: data.get('energy'),
+    project: data.get('project'),
+    tags,
+    notes: data.get('notes'),
+  };
+  try {
+    await patchTask(form.dataset.id, body);
+  } catch (error) {
+    const button = form.querySelector('button[type="submit"]');
+    button.textContent = 'Failed';
+    button.title = error.message;
+  }
+});
+
+load().catch((error) => {
+  els.content.innerHTML = `<div class="empty-card"><h2>Cannot load GTD</h2><p>${esc(error.message)}</p></div>`;
+});
