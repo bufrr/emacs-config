@@ -290,7 +290,8 @@ function isTodayAction(entry) {
   const today = todayStart();
   const scheduled = dateValue(entry.scheduled);
   const due = dateValue(entry.due);
-  return entry.focus || (scheduled && scheduled <= today) || (due && due <= today);
+  const hasFutureDate = (scheduled && scheduled > today) || (due && due > today);
+  return (scheduled && scheduled <= today) || (due && due <= today) || (entry.focus && !hasFutureDate);
 }
 
 function isForecastAction(entry) {
@@ -337,9 +338,9 @@ function isTodayOrPast(value) {
 function plannedDatePatch(entry, value) {
   const date = value || '';
   const patch = {
-    focus: isTodayOrPast(date),
     todo: todoForPlannedEntry(entry),
   };
+  if (isTodayOrPast(date)) patch.focus = true;
   if (entry?.due && !entry?.scheduled) {
     patch.dueAt = date;
   } else {

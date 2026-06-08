@@ -281,6 +281,14 @@ async function clickPlannerAction(page, title, plan) {
   await button.click();
 }
 
+async function assertFocusStar(page, title, active) {
+  const row = await waitForTask(page, title);
+  const selector = active
+    ? '[data-action="FOCUS"].active'
+    : '[data-action="FOCUS"]:not(.active)';
+  await row.locator(selector).waitFor({ state: 'attached', timeout: 5_000 });
+}
+
 async function dragTaskToForecastSection(page, title, label) {
   const row = await waitForTask(page, title);
   const target = page.locator(`.section-title[data-drop-plan-label="${attr(label)}"]`);
@@ -528,14 +536,15 @@ async function runBrowserSuite(baseUrl) {
     await page.locator('[data-planner-mode="today"]').click();
     await waitForTask(page, gamma);
     assert.ok((await page.$$eval('.section-title h2', (nodes) => nodes.map((node) => node.textContent.trim()))).includes('Available Next Actions'));
-    await clickPlannerAction(page, planner, 'not-today');
+    await clickPlannerAction(page, planner, 'tomorrow');
     await waitForNoTask(page, planner);
     await clickNav(page, 'forecast');
     await waitForTask(page, planner);
+    await assertFocusStar(page, planner, true);
     assert.ok((await page.$$eval('.section-title h2', (nodes) => nodes.map((node) => node.textContent.trim()))).includes('Tomorrow'));
-    await dragTaskToForecastSection(page, planner, 'Today');
-    await clickNav(page, 'today');
+    await clickPlannerAction(page, planner, 'not-today');
     await waitForTask(page, planner);
+    await assertFocusStar(page, planner, false);
     await clickPlannerAction(page, planner, 'no-date');
     await waitForNoTask(page, planner);
     await clickNav(page, 'next');
@@ -544,7 +553,12 @@ async function runBrowserSuite(baseUrl) {
     await waitForNoTask(page, planner);
     await clickNav(page, 'forecast');
     await waitForTask(page, planner);
+    await dragTaskToForecastSection(page, planner, 'Today');
+    await clickNav(page, 'today');
+    await waitForTask(page, planner);
     await clickPlannerAction(page, planner, 'tomorrow');
+    await waitForNoTask(page, planner);
+    await clickNav(page, 'forecast');
     await waitForTask(page, planner);
     assert.ok((await page.$$eval('.section-title h2', (nodes) => nodes.map((node) => node.textContent.trim()))).includes('Tomorrow'));
     await clickNav(page, 'next');
