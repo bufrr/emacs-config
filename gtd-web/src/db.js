@@ -290,8 +290,8 @@ function rowsToEntries(rows) {
   return entries.map(({ parent, children, ...entry }) => entry);
 }
 
-function startOfToday() {
-  const date = new Date();
+function startOfToday(now = new Date()) {
+  const date = new Date(now);
   date.setHours(0, 0, 0, 0);
   return date;
 }
@@ -300,9 +300,9 @@ function isOpenEntry(entry) {
   return entry.isCurrent && !DONE_STATES.has(entry.todo);
 }
 
-function isDueForNext(entry) {
+function isDueForNext(entry, now = new Date()) {
   if (!entry.scheduledTime) return true;
-  return entry.scheduledTime <= startOfToday();
+  return entry.scheduledTime <= startOfToday(now);
 }
 
 function sortEntries(entries) {
@@ -318,6 +318,9 @@ function sortEntries(entries) {
 }
 
 function buildGroups(entries, config) {
+  const now = config.now || new Date();
+  const staleCutoff = startOfToday(now);
+  staleCutoff.setDate(staleCutoff.getDate() - Number(config.staleDays || 14));
   const open = entries.filter(isOpenEntry);
   const notTrashed = entries.filter((entry) => !entry.trashed);
   const completedCutoff = new Date();
@@ -335,10 +338,15 @@ function buildGroups(entries, config) {
     all: sortEntries(open),
     inbox: sortEntries(open.filter((entry) => entry.list === 'inbox')),
     focus: sortEntries(open.filter((entry) => entry.focus)),
-    next: sortEntries(open.filter((entry) => entry.list === 'next' || (entry.list === 'scheduled' && isDueForNext(entry)))),
+    next: sortEntries(open.filter((entry) => entry.list === 'next' || (entry.list === 'scheduled' && isDueForNext(entry, now)))),
     actions: [],
     later: sortEntries(open.filter((entry) => entry.list === 'later')),
-    stale: [],
+    stale: sortEntries(open.filter((entry) =>
+      ['inbox', 'next'].includes(entry.list)
+        && entry.createdTime
+        && entry.createdTime < staleCutoff
+        && !entry.scheduledTime
+    )),
     scheduled: sortEntries(open.filter((entry) => entry.list === 'scheduled' || entry.scheduledTime)),
     someday: sortEntries(open.filter((entry) => entry.list === 'someday')),
     waiting: sortEntries(open.filter((entry) => entry.list === 'waiting' || entry.todo === 'WAIT')),
@@ -359,7 +367,6 @@ function buildGroups(entries, config) {
     counts: {},
   };
   groups.actions = groups.next;
-  groups.stale = groups.later;
 
   for (const area of Object.keys(groups.areas)) {
     groups.areas[area] = sortEntries(open.filter((entry) => entry.area === area));
@@ -371,7 +378,7 @@ function buildGroups(entries, config) {
     next: groups.next.length,
     actions: groups.actions.length,
     later: groups.later.length,
-    stale: groups.later.length,
+    stale: groups.stale.length,
     scheduled: groups.scheduled.length,
     someday: groups.someday.length,
     waiting: groups.waiting.length,

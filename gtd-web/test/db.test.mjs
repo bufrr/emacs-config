@@ -42,6 +42,8 @@ test('SQLite store imports Org only as an initial seed', async () => {
   assert.equal(state.storage.org, 'import-export');
   assert.equal(state.groups.next.some((entry) => entry.title === 'Ship API'), true);
   assert.equal(state.groups.inbox.some((entry) => entry.title === 'Raw captured thing'), true);
+  assert.equal(state.groups.stale.some((entry) => entry.title === 'Ship API'), true);
+  assert.equal(state.groups.stale.some((entry) => entry.title === 'Learn the shortcuts'), false);
 
   await writeFile(currentFile, '* Work\n', 'utf8');
   const stateAfterOrgChange = store.readState();

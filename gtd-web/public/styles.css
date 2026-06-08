@@ -148,23 +148,46 @@ select {
 
 .brand {
   position: relative;
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 9px;
   flex: 0 0 42px;
   height: 42px;
-  padding: 0;
+  padding: 0 12px;
   background: var(--bg);
   color: #d5d6da;
   text-decoration: none;
 }
 
-.brand svg {
-  position: absolute;
-  left: 10px;
-  top: 50%;
-  width: 116px;
-  height: 10px;
-  margin-top: -5px;
-  fill: currentColor;
+.brand-mark {
+  display: block;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+}
+
+.brand-mark rect {
+  fill: #303136;
+}
+
+.brand-mark path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.brand-mark path:last-child {
+  stroke: rgba(255, 255, 255, 0.42);
+  stroke-width: 2;
+}
+
+.brand-text {
+  color: #d5d6da;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
 }
 
 .rail-nav {
@@ -180,9 +203,46 @@ select {
   font-weight: 500;
 }
 
+.context-panel {
+  display: block;
+}
+
+.context-summary {
+  position: relative;
+  display: block;
+  padding-right: 16px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.context-summary::-webkit-details-marker {
+  display: none;
+}
+
+.context-summary::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  width: 0;
+  height: 0;
+  margin-top: -2px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid rgba(255, 255, 255, 0.42);
+}
+
+.context-panel:not([open]) .context-summary::after {
+  margin-top: -4px;
+  transform: rotate(-90deg);
+}
+
 .tag-list {
-  display: grid;
-  gap: 1px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 0 8px 0 10px;
 }
 
 .project-list {
@@ -191,19 +251,19 @@ select {
 }
 
 .tag-button {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 30px;
+  display: inline-flex;
+  gap: 5px;
   align-items: center;
-  min-height: 30px;
-  margin: 1px 3px;
-  padding: 0 10px 0 43px;
+  max-width: 100%;
+  min-height: 24px;
+  margin: 0;
+  padding: 0 7px;
   border: 0;
-  border-left: 3px solid transparent;
   border-radius: 4px;
   background: transparent;
   color: #d5d6da;
   font: inherit;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 400;
   text-align: left;
   cursor: pointer;
@@ -212,19 +272,24 @@ select {
 .tag-button:hover,
 .tag-button.active {
   background: var(--rail-active);
-  border-left-color: var(--blue);
+}
+
+.tag-button.active {
+  box-shadow: inset 0 0 0 1px rgba(46, 136, 247, 0.55);
 }
 
 .tag-button span {
+  min-width: 0;
+  max-width: 138px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .tag-button strong {
-  justify-self: end;
+  flex: 0 0 auto;
   color: rgba(255, 255, 255, 0.5);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -1266,6 +1331,29 @@ button.check:hover {
   border-color: rgba(255, 255, 255, 0.45);
 }
 
+.check.checked {
+  position: relative;
+  border-color: rgba(255, 255, 255, 0.34);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.check.checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 5px;
+  height: 9px;
+  border: solid rgba(255, 255, 255, 0.62);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.task.done-state .task-title,
+.task.done-state .project-title-link {
+  color: rgba(255, 255, 255, 0.56);
+}
+
 .star {
   appearance: none;
   -webkit-appearance: none;
@@ -1764,9 +1852,12 @@ button.check:hover {
 }
 
 .has-submenu:hover,
-.has-submenu:focus-within,
-.has-submenu.submenu-open {
+.has-submenu:focus-within {
   z-index: 2;
+}
+
+.has-submenu.submenu-open {
+  z-index: 5;
 }
 
 .has-submenu > .menu-parent::after {
@@ -1801,6 +1892,11 @@ button.check:hover {
 .has-submenu.submenu-open > .menu-flyout {
   display: block;
 }
+
+.has-submenu.submenu-open > .menu-flyout {
+  z-index: 60;
+}
+
 
 .menu-info {
   font-family: "nirvcons-light", inherit;
@@ -2296,6 +2392,7 @@ kbd {
   .rail-heading,
   .project-list,
   .tag-list,
+  .context-panel,
   .rail-footer {
     display: none;
   }

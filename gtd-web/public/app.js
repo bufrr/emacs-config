@@ -55,6 +55,9 @@ const ENERGY_LABELS = {
   high: '••• high',
 };
 const DEFAULT_CONTEXT_TAGS = ['AI', 'blockchain', 'Errand', 'gateway', 'Home', 'Important', 'Pending', 'work', 'Work'];
+const DONE_TODOS = new Set(['DONE', 'CANCELLED']);
+const ACTIVE_STALE_DAYS = 14;
+const DEFERRED_REVIEW_DAYS = 30;
 
 let state = null;
 let currentView = 'next';
@@ -71,6 +74,9 @@ let draggingId = null;
 let dragOverId = null;
 let dragPosition = null;
 let pointerDrag = null;
+let pendingMutations = 0;
+let mutationVersion = 0;
+let stateSyncTimer = 0;
 
 const DRAG_START_DISTANCE = 8;
 
@@ -141,12 +147,136 @@ function minutesForEffort(value) {
   return null;
 }
 
+function isDoneEntry(entry) {
+  return DONE_TODOS.has(entry?.todo);
+}
+
+function uniqueEntries(entries) {
+  return [...new Map(entries.filter(Boolean).map((entry) => [entry.id, entry])).values()];
+}
+
+function cloneState() {
+  return state ? JSON.parse(JSON.stringify(state)) : null;
+}
+
+function renderLocalState() {
+  if (!state) return;
+  setCounts();
+  renderStorage();
+  render();
+}
+
+function restoreLocalState(snapshot) {
+  if (!snapshot) return;
+  state = snapshot;
+  renderLocalState();
+}
+
+function updateLocalTask(id, updater) {
+  if (!state?.groups) return;
+  for (const value of Object.values(state.groups)) {
+    if (!Array.isArray(value)) continue;
+    for (const entry of value) {
+      if (entry && typeof entry === 'object' && entry.id === id) updater(entry);
+    }
+  }
+}
+
+function sectionForArea(area) {
+  return AREA_LABELS[area] || 'Other';
+}
+
+function localDateOrNull(value) {
+  return value ? String(value).slice(0, 10) : null;
+}
+
+function localTaskPatchFromBody(body, entry = {}) {
+  const patch = {};
+  if (Object.hasOwn(body, 'title')) {
+    patch.title = body.title;
+    patch.rawTitle = body.title;
+  }
+  if (Object.hasOwn(body, 'todo')) {
+    patch.todo = body.todo;
+    if (isDoneEntry(patch)) patch.closed = dateOnly(new Date());
+    else patch.closed = null;
+  }
+  if (Object.hasOwn(body, 'list')) patch.list = body.list;
+  if (Object.hasOwn(body, 'focus')) patch.focus = Boolean(body.focus);
+  if (Object.hasOwn(body, 'area')) {
+    patch.area = body.area || entry.area || 'other';
+    patch.section = sectionForArea(patch.area);
+  }
+  if (Object.hasOwn(body, 'effort')) {
+    patch.effort = body.effort || '';
+    patch.time = patch.effort;
+  }
+  if (Object.hasOwn(body, 'energy')) patch.energy = body.energy || '';
+  if (Object.hasOwn(body, 'project')) patch.project = body.project || '';
+  if (Object.hasOwn(body, 'notes')) patch.notes = body.notes || '';
+  if (Object.hasOwn(body, 'tags')) patch.tags = Array.isArray(body.tags) ? body.tags : [];
+  if (Object.hasOwn(body, 'scheduledAt') && body.scheduledAt !== undefined) patch.scheduled = localDateOrNull(body.scheduledAt);
+  if (Object.hasOwn(body, 'dueAt') && body.dueAt !== undefined) patch.due = localDateOrNull(body.dueAt);
+  if (!Object.hasOwn(body, 'todo') && isDoneEntry(entry) && (Object.hasOwn(body, 'list') || (Object.hasOwn(body, 'scheduledAt') && body.scheduledAt !== undefined))) {
+    patch.todo = body.list === 'waiting' ? 'WAIT' : 'TODO';
+    patch.closed = null;
+  }
+  return patch;
+}
+
+function optimisticPatchTask(id, body) {
+  const entry = entryById(id);
+  const patch = localTaskPatchFromBody(body, entry);
+  updateLocalTask(id, (task) => Object.assign(task, patch));
+  editingId = null;
+  creatingTask = false;
+  menuId = null;
+  renderLocalState();
+}
+
+function optimisticTrashTask(id, trashed) {
+  updateLocalTask(id, (task) => {
+    task.trashed = Boolean(trashed);
+    task.trashedAt = trashed ? new Date().toISOString() : null;
+  });
+  editingId = null;
+  creatingTask = false;
+  menuId = null;
+  renderLocalState();
+}
+
+function scheduledIsDueForNext(entry) {
+  const scheduled = dateValue(entry.scheduled);
+  if (!scheduled) return true;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return scheduled <= today;
+}
+
+function entryBelongsToListView(entry, viewId) {
+  if (viewId === 'next') return entry.list === 'next' || (entry.list === 'scheduled' && scheduledIsDueForNext(entry));
+  if (viewId === 'scheduled') return entry.list === 'scheduled' || Boolean(entry.scheduled);
+  if (viewId === 'waiting') return entry.list === 'waiting' || entry.todo === 'WAIT';
+  return entry.list === viewId;
+}
+
 function entriesForView(viewId) {
   if (viewId === 'project') return filterEntries(entriesForProject(currentProject), viewId);
   if (viewId === 'projects') return filterEntries(projectRows(), viewId);
   if (viewId === 'review') return filterEntries(entriesForReview(), viewId);
+  if (viewId === 'logbook') return filterEntries(entriesForSearch().filter((entry) => !entry.trashed && isDoneEntry(entry)), viewId);
+  if (viewId === 'trash') return filterEntries(entriesForSearch().filter((entry) => entry.trashed), viewId);
   const view = VIEWS[viewId] || VIEWS.next;
-  const list = view.area ? (state.groups.areas[view.area] || []) : (state.groups[view.group] || []);
+  if (view.area) {
+    return filterEntries(entriesForSearch().filter((entry) => entry.isCurrent && !entry.trashed && entry.area === view.area), viewId);
+  }
+  if (viewId === 'focus') {
+    return filterEntries(entriesForSearch().filter((entry) => entry.isCurrent && !entry.trashed && !isDoneEntry(entry) && entry.focus), viewId);
+  }
+  if (['inbox', 'next', 'later', 'scheduled', 'someday', 'waiting'].includes(viewId)) {
+    return filterEntries(entriesForSearch().filter((entry) => entry.isCurrent && !entry.trashed && entryBelongsToListView(entry, viewId)), viewId);
+  }
+  const list = state.groups[view.group] || [];
   return filterEntries(list, viewId);
 }
 
@@ -202,8 +332,8 @@ function projectActionEntries(projectName, entries = entriesForProject(projectNa
 
 function projectProgressStats(projectName, entries = entriesForProject(projectName)) {
   const actions = projectActionEntries(projectName, entries);
-  const done = actions.filter((entry) => entry.todo === 'DONE' || entry.todo === 'CANCELLED').length;
-  const open = actions.filter((entry) => entry.isCurrent && entry.todo !== 'DONE' && entry.todo !== 'CANCELLED').length;
+  const done = actions.filter(isDoneEntry).length;
+  const open = actions.filter((entry) => entry.isCurrent && !isDoneEntry(entry)).length;
   const next = actions.filter((entry) => entry.isCurrent && entry.list === 'next').length;
   const wait = actions.filter((entry) => entry.isCurrent && (entry.list === 'waiting' || entry.todo === 'WAIT')).length;
   const projects = actions.filter((entry) => entry.todo === 'PROJ').length;
@@ -247,15 +377,32 @@ function isDoneRecently(entry, days = 7) {
   return Boolean(closed && closed >= daysAgo(days));
 }
 
-function isStaleOpen(entry, days = 14) {
-  if (!entry.isCurrent || entry.todo === 'DONE' || entry.todo === 'CANCELLED') return false;
+function isStaleOpen(entry, days = ACTIVE_STALE_DAYS) {
+  if (!entry.isCurrent || isDoneEntry(entry)) return false;
+  if (!['inbox', 'next'].includes(entry.list)) return false;
   const created = dateValue(entry.created);
-  return Boolean(created && created < daysAgo(days) && !entry.scheduled && entry.list !== 'waiting');
+  return Boolean(created && created < daysAgo(days) && !entry.scheduled);
+}
+
+function isDueOrOverdue(entry) {
+  const due = dateValue(entry.due);
+  if (!due) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return due <= today;
+}
+
+function isDeferredReviewDue(entry, days = DEFERRED_REVIEW_DAYS) {
+  if (!entry.isCurrent || isDoneEntry(entry)) return false;
+  if (!['later', 'someday'].includes(entry.list)) return false;
+  if (entry.scheduled) return false;
+  const created = dateValue(entry.created);
+  return isDueOrOverdue(entry) || Boolean(created && created < daysAgo(days));
 }
 
 function projectHasNextAction(projectName) {
   return projectActionEntries(projectName)
-    .some((entry) => entry.isCurrent && !entry.trashed && entry.todo !== 'DONE' && entry.todo !== 'CANCELLED' && entry.list === 'next');
+    .some((entry) => entry.isCurrent && !entry.trashed && !isDoneEntry(entry) && entry.list === 'next');
 }
 
 function entriesForReview() {
@@ -265,8 +412,8 @@ function entriesForReview() {
     ...current.filter((entry) => entry.list === 'inbox'),
     ...current.filter((entry) => entry.list === 'waiting' || entry.todo === 'WAIT'),
     ...current.filter((entry) => entry.list === 'scheduled'),
-    ...current.filter((entry) => entry.list === 'later' || entry.list === 'someday'),
     ...current.filter(isStaleOpen),
+    ...current.filter(isDeferredReviewDue),
     ...projectRows(),
     ...completed.filter((entry) => isDoneRecently(entry, 7)),
   ];
@@ -361,21 +508,23 @@ function entriesForRender(query) {
 
 function setCounts() {
   const groups = state.groups;
+  const entries = entriesForSearch();
+  const active = entries.filter((entry) => entry.isCurrent && !entry.trashed && !isDoneEntry(entry));
   const counts = {
-    inbox: groups.counts.inbox,
-    focus: groups.counts.focus,
-    actions: groups.actions.length,
+    inbox: active.filter((entry) => entry.list === 'inbox').length,
+    focus: active.filter((entry) => entry.focus).length,
+    actions: active.filter((entry) => entryBelongsToListView(entry, 'next')).length,
     projects: projectRows().length,
     review: entriesForReview().length,
-    later: groups.counts.later,
-    stale: groups.counts.later,
-    scheduled: groups.counts.scheduled,
-    someday: groups.counts.someday,
-    waiting: groups.counts.waiting,
-    work: groups.areas.work.length,
-    parttime: groups.areas.parttime.length,
-    learn: groups.areas.learn.length,
-    other: groups.areas.other.length,
+    later: active.filter((entry) => entry.list === 'later').length,
+    stale: active.filter((entry) => entry.list === 'later').length,
+    scheduled: active.filter((entry) => entryBelongsToListView(entry, 'scheduled')).length,
+    someday: active.filter((entry) => entry.list === 'someday').length,
+    waiting: active.filter((entry) => entryBelongsToListView(entry, 'waiting')).length,
+    work: active.filter((entry) => entry.area === 'work').length,
+    parttime: active.filter((entry) => entry.area === 'parttime').length,
+    learn: active.filter((entry) => entry.area === 'learn').length,
+    other: active.filter((entry) => entry.area === 'other').length,
   };
   for (const [name, value] of Object.entries(counts)) {
     const node = document.querySelector(`[data-count="${name}"]`);
@@ -427,9 +576,12 @@ function renderTags() {
   const tags = state.groups.tags || [];
   if (!els.tagList) return;
   const total = tags.reduce((sum, tag) => sum + tag.count, 0);
+  const sortedTags = [...tags].sort((a, b) =>
+    (b.count || 0) - (a.count || 0) || a.name.localeCompare(b.name)
+  );
   const buttons = [
     { name: 'all', label: 'All', count: total },
-    ...tags.map((tag) => ({ name: tag.name, label: tag.name === '-' ? 'No Tags' : tag.name, count: tag.count })),
+    ...sortedTags.map((tag) => ({ name: tag.name, label: tag.name === '-' ? 'No Tags' : tag.name, count: tag.count })),
   ];
   els.tagList.innerHTML = buttons.map((tag) => `
     <button class="tag-button ${tagFilter === tag.name ? 'active' : ''}" type="button" data-tag-filter="${esc(tag.name)}">
@@ -549,6 +701,7 @@ function closedBucket(entry) {
 }
 
 function areaBucket(entry) {
+  if (isDoneEntry(entry)) return 'Done';
   if (entry.list === 'scheduled') return 'Scheduled';
   if (entry.list === 'waiting' || entry.todo === 'WAIT') return 'Waiting';
   if (entry.list === 'someday') return 'Someday';
@@ -615,8 +768,12 @@ function noteMark(entry) {
 }
 
 function checkbox(entry) {
-  if (!entry.isCurrent || entry.todo === 'DONE' || entry.todo === 'CANCELLED') {
+  if (!entry.isCurrent) {
     return '<span class="check"></span>';
+  }
+  if (isDoneEntry(entry)) {
+    const nextTodo = entry.list === 'waiting' ? 'WAIT' : 'TODO';
+    return `<button class="check checked" type="button" data-action="${nextTodo}" data-id="${entry.id}" aria-label="Mark not done" title="Mark not done"></button>`;
   }
   return `<button class="check" type="button" data-action="DONE" data-id="${entry.id}" aria-label="Mark done"></button>`;
 }
@@ -943,7 +1100,7 @@ function task(entry) {
     ? `<a class="project-title-link" href="#project/${projectSlug(entry.title)}" data-project-open="${esc(entry.title)}">${esc(entry.title)}</a>`
     : `<h3 class="task-title">${esc(entry.title)}</h3>`;
   return `
-    <article class="task ${isProject ? 'project-task' : ''} ${entry.focus ? 'focus-state' : ''} ${menuId === entry.id ? 'menu-open' : ''} ${draggingId === entry.id ? 'dragging' : ''} ${dragOverId === entry.id && dragPosition ? `drop-${dragPosition}` : ''}" data-task-id="${entry.id}" data-task-title="${esc(entry.title)}" data-draggable="${canDrag ? 'true' : 'false'}">
+    <article class="task ${isProject ? 'project-task' : ''} ${isDoneEntry(entry) ? 'done-state' : ''} ${entry.focus ? 'focus-state' : ''} ${menuId === entry.id ? 'menu-open' : ''} ${draggingId === entry.id ? 'dragging' : ''} ${dragOverId === entry.id && dragPosition ? `drop-${dragPosition}` : ''}" data-task-id="${entry.id}" data-task-title="${esc(entry.title)}" data-draggable="${canDrag ? 'true' : 'false'}">
       <div class="task-controls">
         <span class="grip" role="button" aria-label="Drag task" title="Drag task"></span>
         ${checkbox(entry)}
@@ -990,7 +1147,7 @@ function renderGrouped(entries, bucketFn, order) {
 
 function projectBucket(entry) {
   if (entry.todo === 'PROJ') return 'Project';
-  if (entry.todo === 'DONE' || entry.todo === 'CANCELLED') return 'Done';
+  if (isDoneEntry(entry)) return 'Done';
   if (entry.list === 'someday') return 'Someday';
   if (entry.list === 'later') return 'Later';
   if (entry.list === 'scheduled') return 'Scheduled';
@@ -1072,8 +1229,12 @@ function reviewBucket(entry) {
   if (entry.list === 'waiting' || entry.todo === 'WAIT') return 'Waiting';
   if (entry.list === 'scheduled') return 'Scheduled';
   if (isStaleOpen(entry)) return 'Stale Open Loops';
-  if (entry.list === 'later' || entry.list === 'someday') return 'Later / Someday';
+  if (isDeferredReviewDue(entry)) return 'Later / Someday Review';
   return 'Other';
+}
+
+function listBucket(entry, label) {
+  return isDoneEntry(entry) ? 'Done' : label;
 }
 
 function renderReview(entries) {
@@ -1094,7 +1255,7 @@ function renderReview(entries) {
       'Stale Open Loops',
       'Waiting',
       'Scheduled',
-      'Later / Someday',
+      'Later / Someday Review',
       'Done Last 7 Days',
       'Other',
     ])
@@ -1158,11 +1319,11 @@ function renderItems(entries, view) {
     return renderGrouped(entries, closedBucket, ['Today', 'This Week', 'Last Week', 'Older']);
   }
   if (view.area) {
-    return renderGrouped(entries, areaBucket, ['Next Up', 'Scheduled', 'Waiting', 'Later', 'Someday', 'Inbox']);
+    return renderGrouped(entries, areaBucket, ['Next Up', 'Scheduled', 'Waiting', 'Later', 'Someday', 'Inbox', 'Done']);
   }
+  const primaryLabel = view.section || view.title || 'Actions';
   return `
-    <div class="section-title"><h2>${esc(view.section || 'Actions')}</h2><span>${entries.length}</span></div>
-    <div class="items">${entries.map(task).join('')}</div>
+    ${renderGrouped(entries, (entry) => listBucket(entry, primaryLabel), [primaryLabel, 'Done'])}
   `;
 }
 
@@ -1226,38 +1387,68 @@ function setView(view, replace = false, options = {}) {
   render();
 }
 
+function scheduleStateSync(version = mutationVersion) {
+  window.clearTimeout(stateSyncTimer);
+  stateSyncTimer = window.setTimeout(() => {
+    if (pendingMutations > 0 || version !== mutationVersion) return;
+    load({ preserveViewState: true, silent: true, version }).catch((error) => {
+      settingsStatus(`Sync failed: ${error.message}`, 'error');
+    });
+  }, 80);
+}
+
 async function load(options = {}) {
-  els.content.innerHTML = '<div class="empty-card"><h2>Loading</h2><p>Reading task database...</p></div>';
+  if (!options.silent) {
+    els.content.innerHTML = '<div class="empty-card"><h2>Loading</h2><p>Reading task database...</p></div>';
+  }
   const response = await fetch('/api/state', { cache: 'no-store' });
   if (!response.ok) throw new Error('Failed to load GTD state');
-  state = await response.json();
+  const freshState = await response.json();
+  if (options.version !== undefined && options.version !== mutationVersion) return null;
+  state = freshState;
   setCounts();
   renderStorage();
   setView((location.hash || '#next').slice(1), true, options);
+  return state;
 }
 
-async function mutate(url, options) {
-  const response = await fetch(url, {
-    headers: { 'content-type': 'application/json' },
-    ...options,
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok || body.ok === false) {
-    throw new Error(body.error || 'Action failed');
+async function mutate(url, options, mutationOptions = {}) {
+  const version = ++mutationVersion;
+  const snapshot = mutationOptions.optimistic ? cloneState() : null;
+  pendingMutations += 1;
+  if (mutationOptions.optimistic) mutationOptions.optimistic();
+  try {
+    const response = await fetch(url, {
+      headers: { 'content-type': 'application/json' },
+      ...options,
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body.ok === false) {
+      throw new Error(body.error || 'Action failed');
+    }
+    if (!mutationOptions.optimistic) {
+      editingId = null;
+      creatingTask = false;
+      menuId = null;
+    }
+    if (body.export?.ok) settingsStatus(`Exported ${body.export.file}`, 'ok');
+    if (body.export && body.export.ok === false) settingsStatus(`Export failed: ${body.export.error}`, 'error');
+    return body;
+  } catch (error) {
+    if (version === mutationVersion) restoreLocalState(snapshot);
+    throw error;
+  } finally {
+    pendingMutations = Math.max(0, pendingMutations - 1);
+    scheduleStateSync(mutationVersion);
   }
-  editingId = null;
-  creatingTask = false;
-  menuId = null;
-  if (body.export?.ok) settingsStatus(`Exported ${body.export.file}`, 'ok');
-  if (body.export && body.export.ok === false) settingsStatus(`Export failed: ${body.export.error}`, 'error');
-  await load({ preserveViewState: true });
-  return body;
 }
 
 function patchTask(id, body) {
   return mutate(`/api/tasks/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(body),
+  }, {
+    optimistic: () => optimisticPatchTask(id, body),
   });
 }
 
@@ -1317,15 +1508,21 @@ async function dropOnNavTarget(id, target) {
     await mutate(`/api/tasks/${id}/focus`, {
       method: 'PATCH',
       body: JSON.stringify({ focus: true }),
+    }, {
+      optimistic: () => optimisticPatchTask(id, { focus: true }),
     });
     return;
   }
   if (target.dataset.dropAction === 'logbook') {
-    await mutate(`/api/tasks/${id}/logbook`, { method: 'POST' });
+    await mutate(`/api/tasks/${id}/logbook`, { method: 'POST' }, {
+      optimistic: () => optimisticPatchTask(id, { todo: 'DONE' }),
+    });
     return;
   }
   if (target.dataset.dropAction === 'trash') {
-    await mutate(`/api/tasks/${id}/trash`, { method: 'POST' });
+    await mutate(`/api/tasks/${id}/trash`, { method: 'POST' }, {
+      optimistic: () => optimisticTrashTask(id, true),
+    });
   }
 }
 
@@ -1797,9 +1994,12 @@ els.content.addEventListener('click', async (event) => {
   button.disabled = true;
   try {
     if (action === 'FOCUS') {
+      const focus = button.dataset.focus === '1';
       await mutate(`/api/tasks/${id}/focus`, {
         method: 'PATCH',
-        body: JSON.stringify({ focus: button.dataset.focus === '1' }),
+        body: JSON.stringify({ focus }),
+      }, {
+        optimistic: () => optimisticPatchTask(id, { focus }),
       });
     } else if (action === 'SET_LIST') {
       const list = button.dataset.value;
@@ -1836,21 +2036,29 @@ els.content.addEventListener('click', async (event) => {
         todo: entry?.list === 'waiting' ? 'WAIT' : 'TODO',
       });
     } else if (action === 'LOGBOOK') {
-      await mutate(`/api/tasks/${id}/logbook`, { method: 'POST' });
+      await mutate(`/api/tasks/${id}/logbook`, { method: 'POST' }, {
+        optimistic: () => optimisticPatchTask(id, { todo: 'DONE' }),
+      });
     } else if (action === 'COPY') {
       await mutate(`/api/tasks/${id}/copy`, { method: 'POST' });
     } else if (action === 'CONVERT_PROJECT') {
       await mutate(`/api/tasks/${id}/convert/project`, { method: 'POST' });
     } else if (action === 'TRASH') {
-      await mutate(`/api/tasks/${id}/trash`, { method: 'POST' });
+      await mutate(`/api/tasks/${id}/trash`, { method: 'POST' }, {
+        optimistic: () => optimisticTrashTask(id, true),
+      });
     } else if (action === 'RESTORE') {
-      await mutate(`/api/tasks/${id}/restore`, { method: 'POST' });
+      await mutate(`/api/tasks/${id}/restore`, { method: 'POST' }, {
+        optimistic: () => optimisticTrashTask(id, false),
+      });
     } else if (action === 'DELETE') {
       await mutate(`/api/tasks/${id}`, { method: 'DELETE' });
     } else {
       await mutate(`/api/tasks/${id}/state`, {
         method: 'PATCH',
         body: JSON.stringify({ todo: action }),
+      }, {
+        optimistic: () => optimisticPatchTask(id, { todo: action }),
       });
     }
   } catch (error) {

@@ -81,6 +81,8 @@ function menuPath(action, value) {
   if (action === 'SET_ENERGY') return ['Energy'];
   if (action === 'SET_DUE') return ['Due'];
   if (action === 'SET_SCHEDULE') return ['Schedule'];
+  if (action === 'SET_AREA') return ['Area'];
+  if (['ADD_TAG', 'CLEAR_TAGS'].includes(action)) return ['Contexts'];
   if (action === 'CONVERT_PROJECT') return ['Convert'];
   if (action === 'SET_PROJECT') return ['Move', 'Projects'];
   if (['TRASH', 'LOGBOOK'].includes(action)) return ['Move'];
@@ -96,6 +98,49 @@ async function visibleTaskTitles(page) {
       .filter((row) => row.offsetWidth || row.offsetHeight || row.getClientRects().length)
       .map((row) => row.dataset.taskTitle)
   );
+}
+
+async function visibleLoadingCards(page) {
+  return page.$$eval('.empty-card h2', (nodes) =>
+    nodes.filter((node) => {
+      const box = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      return node.textContent.trim() === 'Loading'
+        && style.visibility !== 'hidden'
+        && style.display !== 'none'
+        && box.width > 0
+        && box.height > 0;
+    }).length
+  );
+}
+
+async function assertNoVisibleLoading(page) {
+  assert.equal(await visibleLoadingCards(page), 0, 'Expected no visible Loading card during UI mutation');
+}
+
+async function holdRoute(page, pattern) {
+  let markSeen;
+  const seenPromise = new Promise((resolve) => {
+    markSeen = resolve;
+  });
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const handler = async (route) => {
+    markSeen();
+    await gate;
+    await route.continue();
+  };
+  await page.route(pattern, handler);
+  return {
+    seen: seenPromise,
+    release,
+    cleanup: async () => {
+      release();
+      await page.unroute(pattern, handler);
+    },
+  };
 }
 
 async function waitForTask(page, title) {
@@ -121,6 +166,24 @@ async function clickNav(page, view) {
   assert.equal(await nav.count(), 1, `Expected one nav link for ${view}`);
   await nav.click();
   await page.waitForFunction((expected) => location.hash === `#${expected}`, view);
+}
+
+async function assertAppIdentity(page) {
+  assert.equal(await page.title(), 'GTD');
+  assert.equal(await page.locator('link[rel="icon"]').getAttribute('href'), '/assets/gtd-icon.svg');
+  assert.equal(await page.locator('.brand').getAttribute('aria-label'), 'GTD Home');
+  assert.equal((await page.locator('.brand-text').textContent()).trim(), 'GTD');
+  assert.equal(await page.locator('svg[viewBox="0 0 115 9.8"]').count(), 0, 'Old Nirvana wordmark should not be rendered');
+  assert.equal(await page.getByText('Nirvana GTD').count(), 0, 'Old Nirvana title should not be rendered');
+  const brandBox = await page.locator('.brand-mark').boundingBox();
+  assert.ok(brandBox && brandBox.width >= 20 && brandBox.height >= 20, 'Expected visible GTD brand mark');
+  const faviconStatus = await page.evaluate(async () => {
+    const href = document.querySelector('link[rel="icon"]')?.href;
+    if (!href) return 0;
+    const response = await fetch(href, { cache: 'no-store' });
+    return response.status;
+  });
+  assert.equal(faviconStatus, 200, 'Expected favicon to load');
 }
 
 async function quickAdd(page, title) {
@@ -216,6 +279,50 @@ async function clickProject(page, title) {
   await page.waitForFunction((expected) => decodeURIComponent(location.hash).endsWith(`/project/${expected}`) || decodeURIComponent(location.hash).endsWith(`#project/${expected}`), title);
 }
 
+async function chooseNewTaskMenuValue(form, field, value) {
+  const fieldName = field === 'dueAt' ? 'dueAt' : field;
+  await form.locator(`[data-new-menu="${field}"]`).click();
+  await form.locator(`.new-task-menu [data-new-menu-value="${attr(value)}"]`).click();
+  assert.equal(await form.locator(`[name="${fieldName}"]`).inputValue(), value);
+}
+
+async function assertContextPanel(page, tagName) {
+  const panel = page.locator('.context-panel');
+  await panel.waitFor({ state: 'visible', timeout: 5_000 });
+  assert.equal(await panel.evaluate((node) => node.open), true, 'Contexts should start expanded');
+
+  const firstRowButtonCount = await page.$$eval('#tag-list .tag-button', (buttons) => {
+    if (!buttons.length) return 0;
+    const firstTop = buttons[0].getBoundingClientRect().top;
+    return buttons.filter((button) => Math.abs(button.getBoundingClientRect().top - firstTop) < 4).length;
+  });
+  assert.ok(firstRowButtonCount >= 2, 'Expected multiple context buttons on the first row');
+
+  const tagOrder = await page.$$eval('#tag-list .tag-button', (buttons) =>
+    buttons.map((button) => ({
+      name: button.dataset.tagFilter,
+      count: button.querySelector('strong')?.textContent.trim() || '',
+    }))
+  );
+  assert.equal(tagOrder[0]?.name, 'all', 'All should stay first in contexts');
+  const contextCounts = tagOrder.slice(1).map((tag) => Number(tag.count || 0));
+  for (let index = 1; index < contextCounts.length; index += 1) {
+    assert.ok(
+      contextCounts[index - 1] >= contextCounts[index],
+      `Expected contexts to be sorted by count: ${JSON.stringify(tagOrder)}`
+    );
+  }
+  const targetTag = tagOrder.find((tag) => tag.name === tagName);
+  assert.equal(targetTag?.count, '2', `Expected ${tagName} context count to be 2`);
+
+  await page.locator('.context-summary').click();
+  assert.equal(await panel.evaluate((node) => node.open), false, 'Contexts should collapse');
+  await page.locator('.context-summary').click();
+  assert.equal(await panel.evaluate((node) => node.open), true, 'Contexts should expand again');
+
+  await page.locator(`#tag-list [data-tag-filter="${attr(tagName)}"]`).click();
+}
+
 async function runBrowserSuite(baseUrl) {
   let browser;
   try {
@@ -239,6 +346,7 @@ async function runBrowserSuite(baseUrl) {
   const alphaEdited = slugTitle(`E2E ${suffix} alpha edited`);
   const beta = slugTitle(`E2E ${suffix} beta`);
   const gamma = slugTitle(`E2E ${suffix} gamma`);
+  const doneUndo = slugTitle(`E2E ${suffix} done undo`);
   const project = slugTitle(`E2E ${suffix} project`);
   const projectCopy = `${project} Copy`;
 
@@ -247,16 +355,29 @@ async function runBrowserSuite(baseUrl) {
     await page.goto(`${baseUrl}/#next`, { waitUntil: 'domcontentloaded' });
     await page.locator('#view-title').waitFor({ state: 'visible', timeout: 5_000 });
     assert.equal(await page.locator('#view-title').innerText(), 'Next');
+    await assertAppIdentity(page);
     const topbar = await page.locator('.topbar').innerText();
     assert.match(topbar, /New Item/);
     assert.match(topbar, /Search/);
     assert.match(topbar, /Settings/);
     assert.doesNotMatch(topbar, /Refresh|Upgrade/);
 
-    log('E2E: keyboard new item editor escape');
+    log('E2E: keyboard new item editor controls and escape');
     await page.keyboard.press('n');
-    await page.locator('[data-new-form]').waitFor({ state: 'visible', timeout: 5_000 });
-    await page.keyboard.type(`draft ${suffix}`);
+    const newForm = page.locator('[data-new-form]');
+    await newForm.waitFor({ state: 'visible', timeout: 5_000 });
+    await newForm.locator('[data-action="NEW_FOCUS"]').click();
+    assert.equal(await newForm.locator('[data-action="NEW_FOCUS"]').getAttribute('data-focus'), '1');
+    await chooseNewTaskMenuValue(newForm, 'effort', '30m');
+    await chooseNewTaskMenuValue(newForm, 'energy', 'high');
+    const browserToday = await page.evaluate(() => {
+      const date = new Date();
+      const pad = (value) => String(value).padStart(2, '0');
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+    });
+    await chooseNewTaskMenuValue(newForm, 'dueAt', browserToday);
+    await chooseNewTaskMenuValue(newForm, 'list', 'later');
+    await newForm.locator('input[name="title"]').fill(`draft ${suffix}`);
     await page.keyboard.press('Escape');
     await page.locator('[data-new-form]').waitFor({ state: 'hidden', timeout: 5_000 });
     assert.equal(await page.locator('#quick-add input[name="title"]').inputValue(), '');
@@ -265,6 +386,7 @@ async function runBrowserSuite(baseUrl) {
     await quickAdd(page, alpha);
     await quickAdd(page, beta);
     await quickAdd(page, gamma);
+    await quickAdd(page, doneUndo);
     await quickAdd(page, project);
 
     log('E2E: area chips');
@@ -298,9 +420,41 @@ async function runBrowserSuite(baseUrl) {
     await waitForTask(page, alphaEdited);
     await waitForNoTask(page, alpha);
 
-    log('E2E: focus star and focus view');
+    log('E2E: context menu, sorting, wrapping and collapse');
+    await clickMenu(page, beta, 'ADD_TAG', 'AI');
+    await clickMenu(page, gamma, 'ADD_TAG', 'AI');
+    await page.waitForFunction(() => {
+      const button = document.querySelector('#tag-list [data-tag-filter="AI"]');
+      return button?.querySelector('strong')?.textContent.trim() === '2';
+    }, null, { timeout: 5_000 });
+    await assertContextPanel(page, 'AI');
+    await waitForTask(page, beta);
+    await waitForTask(page, gamma);
+    await waitForNoTask(page, alphaEdited);
+    await page.locator('#tag-list [data-tag-filter="all"]').click();
+    await waitForTask(page, alphaEdited);
+
+    log('E2E: optimistic focus star and focus view');
     const editedRow = await waitForTask(page, alphaEdited);
-    await editedRow.locator('[data-action="FOCUS"]').click();
+    const focusHold = await holdRoute(page, '**/api/tasks/*/focus');
+    try {
+      await editedRow.locator('[data-action="FOCUS"]').click();
+      await focusHold.seen;
+      await page.waitForFunction((title) => {
+        const row = [...document.querySelectorAll('.task[data-task-title]')]
+          .find((node) => node.dataset.taskTitle === title);
+        return row?.querySelector('[data-action="FOCUS"]')?.classList.contains('active');
+      }, alphaEdited, { timeout: 5_000 });
+      await page.waitForTimeout(250);
+      await assertNoVisibleLoading(page);
+      const focusResponse = page.waitForResponse((response) =>
+        response.url().includes('/api/tasks/') && response.url().endsWith('/focus') && response.status() === 200
+      );
+      focusHold.release();
+      await focusResponse;
+    } finally {
+      await focusHold.cleanup();
+    }
     await clickNav(page, 'focus');
     await waitForTask(page, alphaEdited);
     await clickNav(page, 'next');
@@ -354,10 +508,60 @@ async function runBrowserSuite(baseUrl) {
     await waitForTask(page, gamma);
     await clickNav(page, 'next');
 
+    log('E2E: optimistic done and undo without loading flash');
+    const doneHold = await holdRoute(page, '**/api/tasks/*/state');
+    try {
+      const doneRow = await waitForTask(page, doneUndo);
+      await doneRow.locator('[data-action="DONE"]').click();
+      await doneHold.seen;
+      await page.waitForFunction((title) => {
+        const row = [...document.querySelectorAll('.task[data-task-title]')]
+          .find((node) => node.dataset.taskTitle === title);
+        return row?.classList.contains('done-state')
+          && row.querySelector('.check.checked[data-action="TODO"]');
+      }, doneUndo, { timeout: 5_000 });
+      await page.waitForTimeout(250);
+      await assertNoVisibleLoading(page);
+      const doneResponse = page.waitForResponse((response) =>
+        response.url().includes('/api/tasks/') && response.url().endsWith('/state') && response.status() === 200
+      );
+      doneHold.release();
+      await doneResponse;
+    } finally {
+      await doneHold.cleanup();
+    }
+
+    const undoHold = await holdRoute(page, '**/api/tasks/*/state');
+    try {
+      const undoRow = await waitForTask(page, doneUndo);
+      await undoRow.locator('[data-action="TODO"]').click();
+      await undoHold.seen;
+      await page.waitForFunction((title) => {
+        const row = [...document.querySelectorAll('.task[data-task-title]')]
+          .find((node) => node.dataset.taskTitle === title);
+        return row && !row.classList.contains('done-state')
+          && row.querySelector('.check[data-action="DONE"]:not(.checked)');
+      }, doneUndo, { timeout: 5_000 });
+      await page.waitForTimeout(250);
+      await assertNoVisibleLoading(page);
+      const undoResponse = page.waitForResponse((response) =>
+        response.url().includes('/api/tasks/') && response.url().endsWith('/state') && response.status() === 200
+      );
+      undoHold.release();
+      await undoResponse;
+    } finally {
+      await undoHold.cleanup();
+    }
+
     log('E2E: done and logbook');
     const betaRow = await waitForTask(page, beta);
     await betaRow.locator('[data-action="DONE"]').click();
-    await waitForNoTask(page, beta);
+    await page.waitForFunction((title) => {
+      const row = [...document.querySelectorAll('.task[data-task-title]')]
+        .find((node) => node.dataset.taskTitle === title);
+      return row?.classList.contains('done-state')
+        && row.querySelector('.check.checked[data-action="TODO"]');
+    }, beta, { timeout: 5_000 });
     await clickNav(page, 'logbook');
     await waitForTask(page, beta);
 
