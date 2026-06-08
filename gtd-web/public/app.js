@@ -73,6 +73,7 @@ const FORECAST_DAYS = 14;
 let state = null;
 let currentView = 'next';
 let currentProject = '';
+let currentContext = 'all';
 let areaFilter = 'all';
 let tagFilter = 'all';
 let timeFilter = 'all';
@@ -395,6 +396,15 @@ function isTodayPlannerCandidate(entry) {
 
 function entriesForView(viewId) {
   const entries = entriesForSearch();
+  if (viewId === 'context') {
+    const tagged = entries.filter((entry) => {
+      if (!entry.isCurrent || entry.trashed || isDoneEntry(entry)) return false;
+      if (currentContext === 'all') return true;
+      const tags = entry.tags || [];
+      return currentContext === '-' ? tags.length === 0 : tags.includes(currentContext);
+    });
+    return filterEntries(sortByProject(tagged), viewId);
+  }
   if (viewId === 'project') return filterEntries(entriesForProject(currentProject), viewId);
   if (viewId === 'projects') return filterEntries(projectRows(), viewId);
   if (viewId === 'review') return filterEntries(entriesForReview(), viewId);
@@ -440,6 +450,30 @@ function projectFromHash(hashValue) {
   const hash = String(hashValue || '').replace(/^#/, '');
   if (!hash.startsWith('project/')) return null;
   return projectNameFromSlug(hash.slice('project/'.length));
+}
+
+function contextSlug(name) {
+  return encodeURIComponent(name);
+}
+
+function contextNameFromSlug(slug) {
+  try {
+    return decodeURIComponent(slug || '');
+  } catch {
+    return slug || '';
+  }
+}
+
+function contextFromHash(hashValue) {
+  const hash = String(hashValue || '').replace(/^#/, '');
+  if (!hash.startsWith('context/')) return null;
+  return contextNameFromSlug(hash.slice('context/'.length)) || 'all';
+}
+
+function contextLabel(name) {
+  if (name === 'all') return 'All Contexts';
+  if (name === '-') return 'No Tags';
+  return name || 'Context';
 }
 
 function projectByName(name) {
@@ -621,6 +655,7 @@ function filterEntries(entries, viewId = currentView) {
 
 function resetViewState() {
   areaFilter = 'all';
+  tagFilter = 'all';
   timeFilter = 'all';
   energyFilter = 'all';
   todayPlannerMode = false;
@@ -1552,6 +1587,9 @@ function renderProjectsView(entries) {
 }
 
 function renderItems(entries, view) {
+  if (currentView === 'context') {
+    return renderGrouped(entries, (entry) => listBucket(entry, view.title), [view.title, 'Done']);
+  }
   if (currentView === 'project') {
     return renderProjectItems(entries, effectiveProjectName());
   }
@@ -1598,7 +1636,9 @@ function render() {
   if (currentView === 'project') currentProject = projectName;
   const view = currentView === 'project'
     ? { title: projectName || 'Project', subtitle: 'Project', empty: 'Project has no actions' }
-    : (VIEWS[currentView] || VIEWS.next);
+    : currentView === 'context'
+      ? { title: contextLabel(currentContext), subtitle: 'Context', empty: 'No actions in this context' }
+      : (VIEWS[currentView] || VIEWS.next);
   const query = els.search.value.trim();
   const entries = entriesForRender(query);
   els.title.textContent = view.title;
@@ -1628,15 +1668,26 @@ function render() {
 
 function setView(view, replace = false, options = {}) {
   const projectName = projectFromHash(view);
+  const contextName = contextFromHash(view);
+  currentContext = 'all';
   if (projectName !== null) {
     currentView = 'project';
     currentProject = projectByName(projectName)?.name || firstProjectName() || projectName;
+  } else if (contextName !== null) {
+    currentView = 'context';
+    currentContext = contextName;
+    currentProject = '';
   } else {
     currentView = VIEWS[view] ? view : 'next';
     currentProject = '';
   }
   if (!options.preserveViewState) resetViewState();
-  const hash = currentView === 'project' ? `#project/${projectSlug(effectiveProjectName())}` : `#${currentView}`;
+  if (currentView === 'context') tagFilter = currentContext;
+  const hash = currentView === 'project'
+    ? `#project/${projectSlug(effectiveProjectName())}`
+    : currentView === 'context'
+      ? `#context/${contextSlug(currentContext)}`
+      : `#${currentView}`;
   if (replace) history.replaceState(null, '', hash);
   else history.pushState(null, '', hash);
   render();
@@ -1705,6 +1756,41 @@ function patchTask(id, body) {
   }, {
     optimistic: () => optimisticPatchTask(id, body),
   });
+}
+
+function removeDragPreview(drag = pointerDrag) {
+  drag?.preview?.remove();
+  if (drag) drag.preview = null;
+  document.querySelectorAll('.task-drag-preview').forEach((node) => node.remove());
+}
+
+function updateDragPreviewPosition(drag, clientX, clientY) {
+  if (!drag?.preview) return;
+  const x = Math.round(clientX - drag.previewOffsetX);
+  const y = Math.round(clientY - drag.previewOffsetY);
+  drag.preview.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+}
+
+function createDragPreview(drag, row, event) {
+  if (!drag || !row) return;
+  removeDragPreview(drag);
+  const rect = row.getBoundingClientRect();
+  const preview = row.cloneNode(true);
+  preview.classList.remove('dragging', 'drop-before', 'drop-after', 'menu-open');
+  preview.classList.add('task-drag-preview');
+  preview.removeAttribute('data-task-id');
+  preview.removeAttribute('data-task-title');
+  preview.removeAttribute('data-draggable');
+  preview.setAttribute('aria-hidden', 'true');
+  preview.querySelectorAll('[id]').forEach((node) => node.removeAttribute('id'));
+  preview.querySelector('.task-menu')?.remove();
+  preview.style.width = `${Math.min(rect.width, window.innerWidth - 24)}px`;
+  preview.style.height = `${rect.height}px`;
+  drag.preview = preview;
+  drag.previewOffsetX = event.clientX - rect.left;
+  drag.previewOffsetY = event.clientY - rect.top;
+  updateDragPreviewPosition(drag, event.clientX, event.clientY);
+  document.body.append(preview);
 }
 
 function clearDragMarkers() {
@@ -1822,12 +1908,14 @@ function finishPointerDrag(event) {
   if (!drag) return null;
   pointerDrag = null;
   drag.grip?.releasePointerCapture?.(event?.pointerId ?? drag.pointerId);
+  removeDragPreview(drag);
   document.body.classList.remove('is-dragging-task');
   return drag;
 }
 
 function resetDraggingUi({ rerender = false } = {}) {
   draggingId = null;
+  removeDragPreview();
   clearDragMarkers();
   document.querySelectorAll('.task.dragging').forEach((node) => node.classList.remove('dragging'));
   if (rerender) render();
@@ -1930,8 +2018,12 @@ els.chips.addEventListener('change', (event) => {
 els.tagList?.addEventListener('click', (event) => {
   const button = event.target.closest('[data-tag-filter]');
   if (!button) return;
-  tagFilter = button.dataset.tagFilter;
-  render();
+  const tag = button.dataset.tagFilter;
+  if (tag === 'all') {
+    setView(currentView === 'context' ? 'next' : currentView);
+    return;
+  }
+  setView(`context/${contextSlug(tag)}`);
 });
 
 document.querySelector('#new-item').addEventListener('click', () => {
@@ -1988,14 +2080,16 @@ document.addEventListener('pointermove', (event) => {
   const dx = Math.abs(event.clientX - pointerDrag.startX);
   const dy = Math.abs(event.clientY - pointerDrag.startY);
   if (!pointerDrag.active && dx + dy < DRAG_START_DISTANCE) return;
+  draggingId = pointerDrag.id;
+  const row = document.querySelector(`.task[data-task-id="${draggingId}"]`);
   if (!pointerDrag.active) {
     pointerDrag.active = true;
     menuId = null;
     editingId = null;
+    createDragPreview(pointerDrag, row, event);
   }
-  draggingId = pointerDrag.id;
-  const row = document.querySelector(`.task[data-task-id="${draggingId}"]`);
   row?.classList.add('dragging');
+  updateDragPreviewPosition(pointerDrag, event.clientX, event.clientY);
   updatePointerDragMarkers(pointerDropContext(event.clientX, event.clientY));
 });
 

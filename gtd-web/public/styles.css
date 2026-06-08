@@ -1269,6 +1269,19 @@ body.project-mode .quick-add {
   pointer-events: none;
 }
 
+.task-drag-preview {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  margin: 0;
+  pointer-events: none;
+  opacity: 0.96;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(140, 144, 154, 0.18);
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
 .task.drop-before::before,
 .task.drop-after::after {
   content: "";

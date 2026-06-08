@@ -258,6 +258,31 @@ async function dragTaskToTask(page, draggedTitle, targetTitle, position = 'befor
   }, { draggedTitle, targetTitle, position }, { timeout: 5_000 });
 }
 
+async function assertDragPreviewFollowsMouse(page, title) {
+  const row = await waitForTask(page, title);
+  const grip = await row.locator('.grip').boundingBox();
+  assert.ok(grip, `Missing drag grip for ${title}`);
+  const start = { x: grip.x + grip.width / 2, y: grip.y + grip.height / 2 };
+  const first = { x: start.x + 90, y: start.y + 24 };
+  const second = { x: first.x + 140, y: first.y + 54 };
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(first.x, first.y, { steps: 4 });
+  const preview = page.locator('.task-drag-preview');
+  await preview.waitFor({ state: 'visible', timeout: 5_000 });
+  assert.match(await preview.innerText(), new RegExp(escapeRegex(title)));
+  const firstBox = await preview.boundingBox();
+  assert.ok(firstBox, 'Expected visible drag preview bounds');
+  await page.mouse.move(second.x, second.y, { steps: 5 });
+  await page.waitForFunction(({ left, top }) => {
+    const rect = document.querySelector('.task-drag-preview')?.getBoundingClientRect();
+    return rect && Math.abs(rect.left - left) > 24 && Math.abs(rect.top - top) > 12;
+  }, { left: firstBox.x, top: firstBox.y }, { timeout: 5_000 });
+  await page.mouse.up();
+  await preview.waitFor({ state: 'detached', timeout: 5_000 });
+  await waitForTask(page, title);
+}
+
 async function dragTaskToNav(page, title, view) {
   const row = await waitForTask(page, title);
   const nav = page.locator(`.rail-link[data-view-link="${view}"], .footer-link[data-view-link="${view}"]`);
@@ -360,6 +385,9 @@ async function assertContextPanel(page, tagName) {
   assert.equal(await panel.evaluate((node) => node.open), true, 'Contexts should expand again');
 
   await page.locator(`#tag-list [data-tag-filter="${attr(tagName)}"]`).click();
+  await page.waitForFunction((expected) => decodeURIComponent(location.hash) === `#context/${expected}`, tagName);
+  assert.equal(await page.locator('#view-title').innerText(), tagName === '-' ? 'No Tags' : tagName);
+  assert.equal(await page.locator('#view-subtitle').innerText(), 'Context');
 }
 
 async function runBrowserSuite(baseUrl) {
@@ -473,11 +501,13 @@ async function runBrowserSuite(baseUrl) {
       const button = document.querySelector('#tag-list [data-tag-filter="AI"]');
       return button?.querySelector('strong')?.textContent.trim() === '2';
     }, null, { timeout: 5_000 });
+    await clickNav(page, 'later');
     await assertContextPanel(page, 'AI');
     await waitForTask(page, beta);
     await waitForTask(page, gamma);
     await waitForNoTask(page, alphaEdited);
     await page.locator('#tag-list [data-tag-filter="all"]').click();
+    await page.waitForFunction(() => location.hash === '#next');
     await waitForTask(page, alphaEdited);
 
     log('E2E: optimistic focus star and focus view');
@@ -609,6 +639,7 @@ async function runBrowserSuite(baseUrl) {
     await clickNav(page, 'next');
 
     log('E2E: drag reorder');
+    await assertDragPreviewFollowsMouse(page, gamma);
     await dragTaskToTask(page, gamma, beta, 'before');
     const titlesAfterDrag = await visibleTaskTitles(page);
     assert.ok(titlesAfterDrag.indexOf(gamma) < titlesAfterDrag.indexOf(beta), 'Expected dragged task before target task');
