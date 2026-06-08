@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createServer as createNetServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
+import { slugTitle } from '../src/org.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -123,7 +124,7 @@ async function clickNav(page, view) {
 }
 
 async function quickAdd(page, title) {
-  await page.locator('#new-item').click();
+  await page.locator('#quick-add input[name="title"]').click();
   await page.locator('#quick-add input[name="title"]').fill(title);
   await page.keyboard.press('Enter');
   await waitForTask(page, title);
@@ -163,6 +164,7 @@ async function clickMenu(page, title, action, value) {
     const button = buttons.nth(index);
     if (await button.isVisible()) {
       await button.click();
+      await page.locator('.task-menu').waitFor({ state: 'hidden', timeout: 5_000 });
       return;
     }
   }
@@ -233,11 +235,11 @@ async function runBrowserSuite(baseUrl) {
   });
 
   const suffix = Date.now().toString(36);
-  const alpha = `E2E ${suffix} alpha`;
-  const alphaEdited = `E2E ${suffix} alpha edited`;
-  const beta = `E2E ${suffix} beta`;
-  const gamma = `E2E ${suffix} gamma`;
-  const project = `E2E ${suffix} project`;
+  const alpha = slugTitle(`E2E ${suffix} alpha`);
+  const alphaEdited = slugTitle(`E2E ${suffix} alpha edited`);
+  const beta = slugTitle(`E2E ${suffix} beta`);
+  const gamma = slugTitle(`E2E ${suffix} gamma`);
+  const project = slugTitle(`E2E ${suffix} project`);
   const projectCopy = `${project} Copy`;
 
   try {
@@ -251,10 +253,12 @@ async function runBrowserSuite(baseUrl) {
     assert.match(topbar, /Settings/);
     assert.doesNotMatch(topbar, /Refresh|Upgrade/);
 
-    log('E2E: keyboard rapid entry escape');
+    log('E2E: keyboard new item editor escape');
     await page.keyboard.press('n');
+    await page.locator('[data-new-form]').waitFor({ state: 'visible', timeout: 5_000 });
     await page.keyboard.type(`draft ${suffix}`);
     await page.keyboard.press('Escape');
+    await page.locator('[data-new-form]').waitFor({ state: 'hidden', timeout: 5_000 });
     assert.equal(await page.locator('#quick-add input[name="title"]').inputValue(), '');
 
     log('E2E: rapid create tasks');

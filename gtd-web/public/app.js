@@ -16,7 +16,7 @@ const VIEWS = {
   trash: { title: 'Trash', subtitle: '... to be deleted', group: 'trash', empty: 'Trash is empty.' },
 };
 
-const VIEW_ORDER = ['inbox', 'focus', 'next', 'projects', 'review', 'work', 'parttime', 'learn', 'other', 'logbook', 'trash'];
+const VIEW_ORDER = ['inbox', 'focus', 'next', 'later', 'scheduled', 'someday', 'waiting', 'projects', 'review', 'work', 'parttime', 'learn', 'other', 'logbook', 'trash'];
 
 const LIST_LABELS = {
   inbox: 'Inbox',
@@ -64,6 +64,7 @@ let tagFilter = 'all';
 let timeFilter = 'all';
 let energyFilter = 'all';
 let editingId = null;
+let creatingTask = false;
 let menuId = null;
 let noteMode = localStorage.getItem('gtd-note-mode') || 'preview';
 let draggingId = null;
@@ -312,6 +313,7 @@ function resetViewState() {
   areaFilter = 'all';
   timeFilter = 'all';
   energyFilter = 'all';
+  creatingTask = false;
   editingId = null;
   menuId = null;
 }
@@ -600,6 +602,18 @@ function actionButtons(entry) {
   `;
 }
 
+function noteMark(entry) {
+  const hasMarker = Boolean(entry.notes || entry.subtasks?.total);
+  if (!hasMarker) return '';
+  if (entry.todo === 'PROJ' && entry.isCurrent) {
+    return `<button class="note-mark" type="button" data-project-open="${esc(entry.title)}" aria-label="Open project actions" title="Open project actions"></button>`;
+  }
+  if (entry.isCurrent) {
+    return `<button class="note-mark" type="button" data-action="EDIT" data-id="${entry.id}" aria-label="Edit notes" title="Edit notes"></button>`;
+  }
+  return `<button class="note-mark" type="button" data-action="INFO" data-id="${entry.id}" aria-label="Show task info" title="Show task info"></button>`;
+}
+
 function checkbox(entry) {
   if (!entry.isCurrent || entry.todo === 'DONE' || entry.todo === 'CANCELLED') {
     return '<span class="check"></span>';
@@ -621,6 +635,197 @@ function tagsText(entry) {
   return (entry.tags || []).join(', ');
 }
 
+function parseTags(value) {
+  return String(value || '')
+    .split(',')
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
+function editorTagPlaceholder(value) {
+  if (window.matchMedia?.('(max-width: 640px)').matches) return 'Tags';
+  return value;
+}
+
+function editorMainFields({ title = '', tags = '', notes = '', cancelAction, cancelId = '', tagPlaceholder }) {
+  const cancelIdAttr = cancelId ? ` data-id="${esc(cancelId)}"` : '';
+  return `
+    <div class="task-main edit-main">
+      <input class="title-input" name="title" value="${esc(title)}" autocomplete="off" placeholder="To Do">
+      <input name="tags" value="${esc(tags)}" autocomplete="off" placeholder="${esc(editorTagPlaceholder(tagPlaceholder))}">
+      <textarea name="notes" rows="8" placeholder="Notes">${esc(notes)}</textarea>
+      <div class="edit-actions">
+        <button type="submit">Save Changes</button>
+        <button type="button" data-action="${cancelAction}"${cancelIdAttr}>Cancel</button>
+      </div>
+    </div>
+  `;
+}
+
+function editorSideFields({
+  effort = '',
+  energy = '',
+  due = '',
+  dueType = 'date',
+  scheduled = '',
+  list = 'next',
+  area = 'other',
+  project = '',
+  includeArea = true,
+  includeScheduled = false,
+  customMenus = false,
+}) {
+  const newMenuControl = (field, label) => customMenus
+    ? `<button class="side-control" type="button" data-new-menu="${field}" aria-haspopup="menu" aria-expanded="false"><span class="side-control-text">${esc(label)}</span></button>`
+    : '';
+  const nativeClass = customMenus ? ' class="native-field"' : '';
+  return `
+    <div class="edit-side">
+      <label class="side-field side-time"><span>time</span><select${nativeClass} name="effort">
+        ${TIME_OPTIONS.map((value) => option(value, value || 'time', effort)).join('')}
+      </select>${newMenuControl('effort', effort ? (TIME_LABELS[effort] || effort) : 'time')}</label>
+      <label class="side-field side-energy"><span>energy</span><select${nativeClass} name="energy">
+        ${ENERGY_OPTIONS.map((value) => option(value, value ? (ENERGY_LABELS[value] || value) : 'energy', energy)).join('')}
+      </select>${newMenuControl('energy', energy ? (ENERGY_LABELS[energy] || energy) : 'energy')}</label>
+      <label class="side-field side-due"><span>due</span><input${nativeClass} name="dueAt" type="${dueType}" value="${esc(due)}" placeholder="due">${newMenuControl('dueAt', due || 'due')}</label>
+      <label class="side-field side-list"><span>list</span><select${nativeClass} name="list">
+        ${Object.entries(LIST_LABELS).map(([value, label]) => option(value, label, list)).join('')}
+      </select>${newMenuControl('list', LIST_LABELS[list] || list)}</label>
+      ${includeScheduled ? `<label><span>scheduled</span><input name="scheduledAt" type="date" value="${esc(scheduled)}"></label>` : ''}
+      ${includeArea ? `<label class="side-field side-area"><span>area</span><select name="area">
+        ${Object.entries(AREA_LABELS).map(([value, label]) => option(value, label, area)).join('')}
+      </select></label>` : `<input type="hidden" name="area" value="${esc(area)}">`}
+      <label class="side-field side-project"><span>project</span><input${nativeClass} name="project" value="${esc(project)}" placeholder="Standalone">${newMenuControl('project', project || 'Standalone')}</label>
+    </div>
+  `;
+}
+
+function taskBodyFromFormData(data, { includeScheduled = false } = {}) {
+  const list = String(data.get('list') || 'next');
+  const body = {
+    title: data.get('title'),
+    todo: todoForList(list),
+    list,
+    area: data.get('area'),
+    effort: data.get('effort'),
+    dueAt: data.get('dueAt'),
+    energy: data.get('energy'),
+    project: data.get('project'),
+    tags: parseTags(data.get('tags')),
+    notes: data.get('notes'),
+  };
+  if (includeScheduled) body.scheduledAt = data.get('scheduledAt');
+  return body;
+}
+
+function newTaskMenuChoices(field) {
+  if (field === 'effort') {
+    return [
+      ...TIME_OPTIONS.filter(Boolean).map((value) => ({ value, label: TIME_LABELS[value] || value })),
+      { value: '', label: 'none', emptyLabel: 'time' },
+    ];
+  }
+  if (field === 'energy') {
+    return [
+      ...ENERGY_OPTIONS.filter(Boolean).map((value) => ({ value, label: ENERGY_LABELS[value] || value })),
+      { value: '', label: 'none', emptyLabel: 'energy' },
+    ];
+  }
+  if (field === 'dueAt') {
+    return [
+      { value: relativeDate(0), label: 'Today' },
+      { value: relativeDate(1), label: 'Tomorrow' },
+      { value: nextWeekDate(), label: 'Next Week' },
+      { value: '', label: 'none', emptyLabel: 'due' },
+    ];
+  }
+  if (field === 'list') {
+    return Object.entries(LIST_LABELS).map(([value, label]) => ({ value, label }));
+  }
+  if (field === 'project') {
+    const projects = (state?.groups?.projects || []).map((project) => project.name).filter(Boolean);
+    return [
+      { value: '', label: 'Standalone', emptyLabel: 'Standalone' },
+      ...projects.map((name) => ({ value: name, label: name })),
+    ];
+  }
+  return [];
+}
+
+function newTaskMenuField(form, field) {
+  const name = field === 'dueAt' ? 'dueAt' : field;
+  return form.querySelector(`[name="${name}"]`);
+}
+
+function closeNewTaskMenu() {
+  document.querySelectorAll('.new-task-menu').forEach((node) => node.remove());
+  document.querySelectorAll('[data-new-menu][aria-expanded="true"]').forEach((button) => {
+    button.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function openNewTaskMenu(button) {
+  const label = button.closest('label');
+  const field = button.dataset.newMenu;
+  if (!label || !field) return;
+  const wasOpen = button.getAttribute('aria-expanded') === 'true';
+  closeNewTaskMenu();
+  if (wasOpen) return;
+  const form = button.closest('[data-new-form]');
+  const native = form ? newTaskMenuField(form, field) : null;
+  const currentValue = native?.value || '';
+  const choices = newTaskMenuChoices(field);
+  const menu = document.createElement('div');
+  menu.className = 'new-task-menu';
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = choices.map((choice) => `
+    <button type="button" role="menuitem" data-new-menu-value="${esc(choice.value)}" data-empty-label="${esc(choice.emptyLabel || '')}" class="${choice.value === currentValue ? 'active' : ''}">
+      ${esc(choice.label)}
+    </button>
+  `).join('');
+  label.append(menu);
+  button.setAttribute('aria-expanded', 'true');
+}
+
+function setNewTaskMenuValue(choiceButton) {
+  const menu = choiceButton.closest('.new-task-menu');
+  const label = menu?.closest('label');
+  const control = label?.querySelector('[data-new-menu]');
+  const form = label?.closest('[data-new-form]');
+  if (!menu || !control || !form) return;
+  const native = newTaskMenuField(form, control.dataset.newMenu);
+  if (!native) return;
+  native.value = choiceButton.dataset.newMenuValue || '';
+  native.dispatchEvent(new Event('change', { bubbles: true }));
+  const text = control.querySelector('.side-control-text');
+  if (text) {
+    text.textContent = native.value
+      ? choiceButton.textContent.trim()
+      : (choiceButton.dataset.emptyLabel || choiceButton.textContent.trim());
+  }
+  closeNewTaskMenu();
+}
+
+function newTaskForm() {
+  const list = listForCurrentView();
+  const area = VIEWS[currentView]?.area || els.areaSelect.value || 'other';
+  const project = currentView === 'project' ? effectiveProjectName() : '';
+  return `
+    <form class="task edit-task new-task" data-new-form>
+      <div class="task-controls edit-controls">
+        <span class="grip" aria-hidden="true"></span>
+        <span class="check"></span>
+        <button class="star" type="button" data-action="NEW_FOCUS" data-focus="0" aria-label="Add to focus"></button>
+      </div>
+      ${editorMainFields({
+        cancelAction: 'CANCEL_NEW',
+        tagPlaceholder: 'Tags (areas, contacts, contexts) comma separated',
+      })}
+      ${editorSideFields({ list, area, project, dueType: 'text', includeArea: false, customMenus: true })}
+    </form>
+  `;
+}
+
 function editTask(entry) {
   return `
     <form class="task edit-task" data-edit-form data-id="${entry.id}" data-task-title="${esc(entry.title)}">
@@ -629,32 +834,24 @@ function editTask(entry) {
         <span class="check"></span>
         ${focusStar(entry)}
       </div>
-      <div class="task-main edit-main">
-        <input class="title-input" name="title" value="${esc(entry.title)}" autocomplete="off" placeholder="To Do">
-        <input name="tags" value="${esc(tagsText(entry))}" autocomplete="off" placeholder="Tags (contexts) comma separated">
-        <textarea name="notes" rows="8" placeholder="Notes">${esc(entry.notes || '')}</textarea>
-        <div class="edit-actions">
-          <button type="submit">Save Changes</button>
-          <button type="button" data-action="CANCEL_EDIT" data-id="${entry.id}">Cancel</button>
-        </div>
-      </div>
-      <div class="edit-side">
-        <label><span>time</span><select name="effort">
-          ${TIME_OPTIONS.map((value) => option(value, value || 'time', entry.effort || '')).join('')}
-        </select></label>
-        <label><span>energy</span><select name="energy">
-          ${ENERGY_OPTIONS.map((value) => option(value, value ? (ENERGY_LABELS[value] || value) : 'energy', entry.energy || '')).join('')}
-        </select></label>
-        <label><span>due</span><input name="dueAt" type="date" value="${esc(entry.due || '')}"></label>
-        <label><span>list</span><select name="list">
-          ${Object.entries(LIST_LABELS).map(([value, label]) => option(value, label, entry.list || 'next')).join('')}
-        </select></label>
-        <label><span>scheduled</span><input name="scheduledAt" type="date" value="${esc(entry.scheduled || '')}"></label>
-        <label><span>area</span><select name="area">
-          ${Object.entries(AREA_LABELS).map(([value, label]) => option(value, label, entry.area || 'other')).join('')}
-        </select></label>
-        <label><span>project</span><input name="project" value="${esc(entry.project || '')}" placeholder="Standalone"></label>
-      </div>
+      ${editorMainFields({
+        title: entry.title,
+        tags: tagsText(entry),
+        notes: entry.notes || '',
+        cancelAction: 'CANCEL_EDIT',
+        cancelId: entry.id,
+        tagPlaceholder: 'Tags (contexts) comma separated',
+      })}
+      ${editorSideFields({
+        effort: entry.effort || '',
+        energy: entry.energy || '',
+        due: entry.due || '',
+        scheduled: entry.scheduled || '',
+        list: entry.list || 'next',
+        area: entry.area || 'other',
+        project: entry.project || '',
+        includeScheduled: true,
+      })}
     </form>
   `;
 }
@@ -739,7 +936,7 @@ function task(entry) {
   const visibleState = entry.todo && entry.todo !== 'TODO'
     ? `<span class="state state-${entry.todo.toLowerCase()}">${esc(entry.todo)}</span>`
     : '';
-  const note = entry.notes || entry.subtasks?.total ? '<span class="note-mark" aria-label="Has notes or project actions"></span>' : '';
+  const note = noteMark(entry);
   const date = entry.scheduled ? `<span class="date-chip">${esc(shortDate(entry.scheduled))}</span>` : '';
   const canDrag = entry.isCurrent && !entry.trashed;
   const title = isProject && entry.isCurrent
@@ -822,7 +1019,7 @@ function projectSummaryCard(projectName, entries) {
         <div class="project-summary-title">
           <span class="state state-proj">PROJ</span>
           <h2>${esc(projectName)}</h2>
-          ${summary.notes || stats.total ? '<span class="note-mark" aria-label="Has project actions"></span>' : ''}
+          ${summary.notes || stats.total ? `<button class="note-mark" type="button" data-project-open="${esc(projectName)}" aria-label="Open project actions" title="Open project actions"></button>` : ''}
         </div>
         ${summary.notes ? `<div class="task-note">${htmlLines(summary.notes)}</div>` : ''}
         ${progress(summary, stats)}
@@ -1003,13 +1200,17 @@ function render() {
     link.classList.toggle('active', currentView === 'project' && link.dataset.projectLink === projectName);
   });
   if (!entries.length && !['review', 'projects'].includes(currentView)) {
+    if (creatingTask) {
+      els.content.innerHTML = newTaskForm();
+      return;
+    }
     els.content.innerHTML = query ? searchEmptyCard(query) : emptyCard(view.empty);
     return;
   }
-  els.content.innerHTML = renderItems(entries, view);
+  els.content.innerHTML = `${creatingTask ? newTaskForm() : ''}${renderItems(entries, view)}`;
 }
 
-function setView(view, replace = false) {
+function setView(view, replace = false, options = {}) {
   const projectName = projectFromHash(view);
   if (projectName !== null) {
     currentView = 'project';
@@ -1018,21 +1219,21 @@ function setView(view, replace = false) {
     currentView = VIEWS[view] ? view : 'next';
     currentProject = '';
   }
-  resetViewState();
+  if (!options.preserveViewState) resetViewState();
   const hash = currentView === 'project' ? `#project/${projectSlug(effectiveProjectName())}` : `#${currentView}`;
   if (replace) history.replaceState(null, '', hash);
   else history.pushState(null, '', hash);
   render();
 }
 
-async function load() {
+async function load(options = {}) {
   els.content.innerHTML = '<div class="empty-card"><h2>Loading</h2><p>Reading task database...</p></div>';
   const response = await fetch('/api/state', { cache: 'no-store' });
   if (!response.ok) throw new Error('Failed to load GTD state');
   state = await response.json();
   setCounts();
   renderStorage();
-  setView((location.hash || '#next').slice(1), true);
+  setView((location.hash || '#next').slice(1), true, options);
 }
 
 async function mutate(url, options) {
@@ -1045,10 +1246,11 @@ async function mutate(url, options) {
     throw new Error(body.error || 'Action failed');
   }
   editingId = null;
+  creatingTask = false;
   menuId = null;
   if (body.export?.ok) settingsStatus(`Exported ${body.export.file}`, 'ok');
   if (body.export && body.export.ok === false) settingsStatus(`Export failed: ${body.export.error}`, 'error');
-  await load();
+  await load({ preserveViewState: true });
   return body;
 }
 
@@ -1180,6 +1382,17 @@ function focusRapidEntry(view = currentView) {
   els.titleInput.focus();
 }
 
+function openNewTask(view = currentView) {
+  if (view !== currentView) setView(view);
+  creatingTask = true;
+  editingId = null;
+  menuId = null;
+  render();
+  requestAnimationFrame(() => {
+    document.querySelector('[data-new-form] input[name="title"]')?.focus();
+  });
+}
+
 function showShortcuts() {
   window.alert([
     'Create: n, Shift+n',
@@ -1259,7 +1472,7 @@ els.tagList?.addEventListener('click', (event) => {
 });
 
 document.querySelector('#new-item').addEventListener('click', () => {
-  focusRapidEntry();
+  openNewTask();
 });
 
 els.settings?.addEventListener('click', (event) => {
@@ -1353,6 +1566,9 @@ document.addEventListener('pointercancel', (event) => {
 });
 
 document.addEventListener('click', (event) => {
+  if (!event.target.closest('[data-new-menu]') && !event.target.closest('.new-task-menu')) {
+    closeNewTaskMenu();
+  }
   if (!event.target.closest('.task-menu') && !event.target.closest('[data-action="MENU"]')) {
     if (menuId) {
       menuId = null;
@@ -1368,9 +1584,15 @@ document.addEventListener('keydown', (event) => {
   const tag = event.target?.tagName?.toLowerCase();
   const inField = ['input', 'textarea', 'select'].includes(tag);
   if (event.key === 'Escape') {
-    if (editingId || menuId) {
+    if (document.querySelector('.new-task-menu')) {
+      event.preventDefault();
+      closeNewTaskMenu();
+      return;
+    }
+    if (editingId || menuId || creatingTask) {
       event.preventDefault();
       editingId = null;
+      creatingTask = false;
       menuId = null;
       render();
       return;
@@ -1421,7 +1643,7 @@ document.addEventListener('keydown', (event) => {
   }
   if (key === 'n') {
     event.preventDefault();
-    focusRapidEntry();
+    openNewTask();
     return;
   }
   const createTargets = {
@@ -1434,7 +1656,7 @@ document.addEventListener('keydown', (event) => {
   const targetView = createTargets[key];
   if (targetView) {
     event.preventDefault();
-    focusRapidEntry(targetView);
+    openNewTask(targetView);
   }
 });
 
@@ -1478,6 +1700,20 @@ els.form.addEventListener('submit', async (event) => {
 });
 
 els.content.addEventListener('click', async (event) => {
+  const newMenuChoice = event.target.closest('[data-new-menu-value]');
+  if (newMenuChoice) {
+    event.preventDefault();
+    event.stopPropagation();
+    setNewTaskMenuValue(newMenuChoice);
+    return;
+  }
+  const newMenuButton = event.target.closest('[data-new-menu]');
+  if (newMenuButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    openNewTaskMenu(newMenuButton);
+    return;
+  }
   if (event.target.closest('[data-clear-search]')) {
     els.search.value = '';
     render();
@@ -1495,15 +1731,29 @@ els.content.addEventListener('click', async (event) => {
   if (!button) return;
   event.stopPropagation();
   const { action, id } = button.dataset;
+  if (action === 'CANCEL_NEW') {
+    creatingTask = false;
+    render();
+    return;
+  }
+  if (action === 'NEW_FOCUS') {
+    const active = button.dataset.focus !== '1';
+    button.dataset.focus = active ? '1' : '0';
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-label', active ? 'Remove from focus' : 'Add to focus');
+    return;
+  }
   const entry = entryById(id);
   if (action === 'MENU') {
     menuId = menuId === id ? null : id;
     editingId = null;
+    creatingTask = false;
     render();
     return;
   }
   if (action === 'EDIT') {
     editingId = id;
+    creatingTask = false;
     menuId = null;
     render();
     return;
@@ -1614,33 +1864,37 @@ els.content.addEventListener('dblclick', (event) => {
   const row = event.target.closest('[data-task-id]');
   if (!row) return;
   editingId = row.dataset.taskId;
+  creatingTask = false;
   menuId = null;
   render();
 });
 
 els.content.addEventListener('submit', async (event) => {
+  const newForm = event.target.closest('[data-new-form]');
+  if (newForm) {
+    event.preventDefault();
+    const data = new FormData(newForm);
+    const body = {
+      ...taskBodyFromFormData(data),
+      focus: newForm.querySelector('[data-action="NEW_FOCUS"]')?.dataset.focus === '1',
+    };
+    try {
+      await mutate('/api/tasks', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      const button = newForm.querySelector('button[type="submit"]');
+      button.textContent = 'Failed';
+      button.title = error.message;
+    }
+    return;
+  }
   const form = event.target.closest('[data-edit-form]');
   if (!form) return;
   event.preventDefault();
   const data = new FormData(form);
-  const tags = String(data.get('tags') || '')
-    .split(',')
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-  const list = data.get('list');
-  const body = {
-    title: data.get('title'),
-    todo: todoForList(list),
-    list,
-    area: data.get('area'),
-    effort: data.get('effort'),
-    scheduledAt: data.get('scheduledAt'),
-    dueAt: data.get('dueAt'),
-    energy: data.get('energy'),
-    project: data.get('project'),
-    tags,
-    notes: data.get('notes'),
-  };
+  const body = taskBodyFromFormData(data, { includeScheduled: true });
   try {
     await patchTask(form.dataset.id, body);
   } catch (error) {

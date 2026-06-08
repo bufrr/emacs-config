@@ -1389,12 +1389,20 @@ button.check:hover {
 
 .note-mark {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
   width: 15px;
   height: 15px;
   margin-left: 4px;
   border: 0;
   border-radius: 0;
-  flex: 0 0 auto;
+  background: transparent;
+  color: rgb(171, 172, 178);
+  padding: 0;
+  opacity: 0.76;
+  cursor: pointer;
 }
 
 .note-mark::before {
@@ -1402,10 +1410,22 @@ button.check:hover {
   position: absolute;
   left: 0;
   top: 1px;
-  color: rgb(171, 172, 178);
+  color: currentColor;
   font-family: "nirvcons-light";
   font-size: 15px;
   line-height: 1;
+}
+
+.note-mark:hover,
+.note-mark:focus-visible {
+  color: #f2f3f6;
+  opacity: 1;
+  outline: 0;
+}
+
+.note-mark:focus-visible {
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px rgba(46, 136, 247, 0.65);
 }
 
 .meta {
@@ -1788,13 +1808,263 @@ button.check:hover {
 
 .edit-task {
   grid-template-columns: 78px minmax(360px, 1fr) 230px;
-  gap: 0;
+  column-gap: 16px;
+  row-gap: 0;
   align-items: start;
   min-height: 240px;
   padding: 20px 0;
   overflow: visible;
   border-color: #45464a;
   background: #303136;
+}
+
+.new-task {
+  grid-template-columns: 47px minmax(360px, 1fr) 205px;
+  column-gap: 0;
+  min-height: 374px;
+  margin: 0 0 26px;
+  padding: 31px 17px 28px 0;
+  border-color: transparent;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.new-task .task-controls {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  width: 47px;
+  height: auto;
+  min-height: 34px;
+  overflow: visible;
+  padding-top: 0;
+}
+
+.new-task .grip,
+.new-task .check {
+  display: none;
+}
+
+.new-task .star {
+  grid-column: 1;
+  color: #6f7178;
+  width: 44px;
+  height: 44px;
+  margin-top: -10px;
+  transform: none;
+  outline: 0;
+}
+
+.new-task .star::before {
+  content: "\2605";
+  font-family: Arial, sans-serif;
+  font-size: 22px;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.new-task .star:focus,
+.new-task .star:focus-visible {
+  outline: 0;
+  box-shadow: none;
+}
+
+.new-task .star.active {
+  color: #ffd700;
+}
+
+.new-task .edit-main {
+  padding-right: 24px;
+}
+
+.new-task .edit-main .title-input {
+  min-height: 40px;
+}
+
+.new-task .edit-main input[name="tags"] {
+  margin-top: 4px;
+}
+
+.new-task .edit-main textarea {
+  min-height: 182px;
+  margin-bottom: 6px;
+}
+
+.new-task .edit-side {
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.new-task .edit-side label {
+  position: relative;
+  display: block;
+}
+
+.new-task .edit-side label > span {
+  position: absolute;
+  left: 13px;
+  top: 50%;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  width: 20px;
+  height: 18px;
+  margin-top: -9px;
+  color: #a5a6aa;
+  font-size: 0;
+  line-height: 18px;
+  pointer-events: none;
+}
+
+.new-task .edit-side label > span::before {
+  display: inline-block;
+  width: 17px;
+  color: #a5a6aa;
+  font-family: "nirvcons-light";
+  font-size: 18px;
+  font-style: normal;
+  line-height: 1;
+  text-align: center;
+}
+
+.new-task .side-time > span::before {
+  content: "\e829";
+}
+
+.new-task .side-energy > span::before {
+  content: "\e84e";
+}
+
+.new-task .side-due > span::before {
+  content: "\2691";
+  font-family: inherit;
+}
+
+.new-task .side-list > span::before {
+  content: "\e8ae";
+}
+
+.new-task .side-project > span::before {
+  content: "\e801";
+}
+
+.new-task .side-list {
+  margin-top: 30px;
+}
+
+.new-task .side-field select,
+.new-task .side-field input {
+  height: 32px;
+  min-height: 32px;
+  padding: 6px 34px 6px 48px;
+  border: 0;
+  border-radius: 3px;
+  background-color: #25262a;
+  color: #d5d6da;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.new-task .side-field input::placeholder {
+  color: #a5a6aa;
+  opacity: 1;
+}
+
+.new-task .side-field .native-field {
+  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.new-task .side-control {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 32px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 3px;
+  background-color: #25262a;
+  color: #d5d6da;
+  padding: 6px 34px 6px 48px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.new-task .side-control:hover,
+.new-task .side-control:focus-visible {
+  background-color: #202124;
+  outline: 0;
+}
+
+.new-task .side-control-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-task .side-control::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  width: 0;
+  height: 0;
+  margin-top: -2px;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 5px solid #a5a6aa;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.new-task-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 2px);
+  z-index: 40;
+  display: grid;
+  width: 166px;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  border-radius: 3px;
+  background: #25262a;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.32);
+  padding: 5px 0;
+}
+
+.new-task-menu button {
+  width: 100%;
+  min-height: 24px;
+  border: 0;
+  background: transparent;
+  color: #cfd0d5;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.new-task-menu button:hover,
+.new-task-menu button:focus-visible,
+.new-task-menu button.active {
+  background: #303136;
+  color: #f2f3f6;
+  outline: 0;
 }
 
 .edit-task .actions {
@@ -1891,7 +2161,7 @@ button.check:hover {
   gap: 7px;
 }
 
-.edit-side label span {
+.edit-side label > span {
   color: #a5a6aa;
   font-size: 12px;
 }
@@ -1991,13 +2261,14 @@ kbd {
 @media (max-width: 760px) {
   .app {
     grid-template-columns: 1fr;
+    grid-template-rows: 54px minmax(0, 1fr);
   }
 
   .rail {
     position: sticky;
     top: 0;
     z-index: 5;
-    height: auto;
+    height: 54px;
     display: block;
     border-right: 0;
     border-bottom: 1px solid #202125;
@@ -2012,8 +2283,10 @@ kbd {
     display: flex;
     gap: 6px;
     overflow-x: auto;
+    overflow-y: hidden;
     padding: 8px 10px;
     scrollbar-width: none;
+    align-items: center;
   }
 
   .rail-nav::-webkit-scrollbar {
@@ -2021,18 +2294,29 @@ kbd {
   }
 
   .rail-heading,
+  .project-list,
   .tag-list,
   .rail-footer {
     display: none;
   }
 
   .rail-link {
-    grid-template-columns: 24px max-content auto;
+    flex: 0 0 auto;
+    grid-template-columns: 24px max-content max-content;
+    column-gap: 4px;
     min-height: 38px;
     margin: 0;
     padding: 0 12px;
     white-space: nowrap;
     font-size: 16px;
+  }
+
+  .rail-link strong {
+    justify-self: start;
+  }
+
+  .rail-link[data-view-link="inbox"] {
+    margin-bottom: 0;
   }
 
   .rail-link.active::before {
@@ -2058,8 +2342,25 @@ kbd {
   }
 
   .topbar {
+    display: grid;
+    grid-template-columns: max-content minmax(108px, 1fr) max-content;
+    align-items: center;
     padding: 0 18px;
-    gap: 16px;
+    gap: 12px;
+  }
+
+  .top-spacer {
+    display: none;
+  }
+
+  .top-action {
+    width: auto;
+    min-width: 100px;
+  }
+
+  .top-util {
+    justify-self: end;
+    padding: 6px 0 6px 8px;
   }
 
   .settings-panel {
@@ -2071,8 +2372,8 @@ kbd {
   }
 
   .search {
+    width: auto;
     min-width: 0;
-    flex: 1;
   }
 
   .quick-add {
@@ -2095,6 +2396,8 @@ kbd {
 
   .edit-task {
     grid-template-columns: 78px minmax(0, 1fr);
+    column-gap: 0;
+    row-gap: 8px;
   }
 
   .edit-side {
