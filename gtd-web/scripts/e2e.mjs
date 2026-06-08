@@ -471,9 +471,23 @@ async function runBrowserSuite(baseUrl) {
     assert.match(await (await waitForTask(page, alphaEdited)).innerText(), /high/);
     await clickMenu(page, alphaEdited, 'SET_REPEAT', 'weekly');
     assert.match(await (await waitForTask(page, alphaEdited)).innerText(), /weekly/);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = await page.evaluate(() => {
+      const date = new Date();
+      const pad = (value) => String(value).padStart(2, '0');
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+    });
     await clickMenu(page, alphaEdited, 'SET_DUE', today);
     assert.match(await (await waitForTask(page, alphaEdited)).innerText(), /Due/);
+    await clickNav(page, 'today');
+    assert.equal(await page.locator('#view-title').innerText(), 'Today');
+    await waitForTask(page, alphaEdited);
+    assert.ok((await page.$$eval('.section-title h2', (nodes) => nodes.map((node) => node.textContent.trim()))).includes('Due Today'));
+    await page.keyboard.press('u');
+    await page.waitForFunction(() => location.hash === '#forecast');
+    assert.equal(await page.locator('#view-title').innerText(), 'Forecast');
+    await waitForTask(page, alphaEdited);
+    assert.ok((await page.$$eval('.section-title h2', (nodes) => nodes.map((node) => node.textContent.trim()))).includes('Today'));
+    await clickNav(page, 'next');
 
     log('E2E: scheduled move and unschedule');
     const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -499,6 +513,9 @@ async function runBrowserSuite(baseUrl) {
     await clickNav(page, 'scheduled');
     await waitForTask(page, routine);
     assert.match(await (await waitForTask(page, routine)).innerText(), /daily/);
+    await clickNav(page, 'forecast');
+    await waitForTask(page, routine);
+    assert.ok((await page.$$eval('.section-title h2', (nodes) => nodes.map((node) => node.textContent.trim()))).includes('Tomorrow'));
     await clickNav(page, 'next');
 
     log('E2E: drag reorder');
@@ -522,6 +539,23 @@ async function runBrowserSuite(baseUrl) {
     await clickMenu(page, project, 'CONVERT_PROJECT');
     assert.match(await (await waitForTask(page, project)).innerText(), /PROJ/);
     await clickMenu(page, gamma, 'SET_PROJECT', project);
+    await clickMenu(page, beta, 'SET_PROJECT', project);
+    await clickMenu(page, beta, 'SET_DUE', today);
+    await clickNav(page, 'next');
+    const nextProjectOrder = await visibleTaskTitles(page);
+    assert.ok(nextProjectOrder.indexOf(beta) < nextProjectOrder.indexOf(alphaEdited), 'Expected project action before standalone action in Next');
+    assert.ok(nextProjectOrder.indexOf(gamma) < nextProjectOrder.indexOf(alphaEdited), 'Expected project action before standalone action in Next');
+    await clickNav(page, 'today');
+    await waitForTask(page, beta);
+    await waitForTask(page, alphaEdited);
+    const todayProjectOrder = await visibleTaskTitles(page);
+    assert.ok(todayProjectOrder.indexOf(beta) < todayProjectOrder.indexOf(alphaEdited), 'Expected project action before standalone action in Today');
+    await clickNav(page, 'forecast');
+    await waitForTask(page, beta);
+    await waitForTask(page, alphaEdited);
+    const forecastProjectOrder = await visibleTaskTitles(page);
+    assert.ok(forecastProjectOrder.indexOf(beta) < forecastProjectOrder.indexOf(alphaEdited), 'Expected project action before standalone action in Forecast');
+    await clickNav(page, 'next');
     await clickNav(page, 'projects');
     await page.locator('.project-card').filter({ hasText: project }).waitFor({ state: 'visible', timeout: 5_000 });
     await clickProject(page, project);
@@ -625,6 +659,7 @@ async function runBrowserSuite(baseUrl) {
     await page.keyboard.press('k');
     await page.waitForTimeout(100);
     assert.match(shortcutText, /Create: n/);
+    assert.match(shortcutText, /t today, u forecast/);
     assert.doesNotMatch(shortcutText, /Refresh/);
     await page.keyboard.press('5');
     await page.waitForFunction(() => location.hash === '#review');

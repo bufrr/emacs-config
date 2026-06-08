@@ -1,6 +1,8 @@
 const VIEWS = {
   inbox: { title: 'Inbox', subtitle: "New / unprocessed to-do's", group: 'inbox', empty: 'Your Inbox is empty' },
   focus: { title: 'Focus', subtitle: 'Today', group: 'focus', empty: 'Focus list is empty' },
+  today: { title: 'Today', subtitle: 'Due, scheduled, and focused', group: 'all', empty: 'Nothing planned for today', chips: true },
+  forecast: { title: 'Forecast', subtitle: 'Next 14 days', group: 'all', empty: 'No upcoming dated tasks', chips: true },
   next: { title: 'Next', subtitle: "To-do's for anytime", group: 'actions', section: 'Actions', empty: 'Next list is empty', chips: true },
   projects: { title: 'Projects', subtitle: 'Open loops with visible next actions', group: 'projects', empty: 'No active projects' },
   review: { title: 'Review', subtitle: 'Weekly clarity check', group: 'all', empty: 'Nothing to review' },
@@ -16,7 +18,7 @@ const VIEWS = {
   trash: { title: 'Trash', subtitle: '... to be deleted', group: 'trash', empty: 'Trash is empty.' },
 };
 
-const VIEW_ORDER = ['inbox', 'focus', 'next', 'later', 'scheduled', 'someday', 'waiting', 'projects', 'review', 'work', 'parttime', 'learn', 'other', 'logbook', 'trash'];
+const VIEW_ORDER = ['inbox', 'focus', 'today', 'forecast', 'next', 'later', 'scheduled', 'someday', 'waiting', 'projects', 'review', 'work', 'parttime', 'learn', 'other', 'logbook', 'trash'];
 
 const LIST_LABELS = {
   inbox: 'Inbox',
@@ -64,6 +66,7 @@ const DEFAULT_CONTEXT_TAGS = ['AI', 'blockchain', 'Errand', 'gateway', 'Home', '
 const DONE_TODOS = new Set(['DONE', 'CANCELLED']);
 const ACTIVE_STALE_DAYS = 14;
 const DEFERRED_REVIEW_DAYS = 30;
+const FORECAST_DAYS = 14;
 
 let state = null;
 let currentView = 'next';
@@ -129,9 +132,24 @@ function dateOnly(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+function startOfDay(date = new Date()) {
+  const value = new Date(date);
+  value.setHours(0, 0, 0, 0);
+  return value;
+}
+
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function todayStart() {
+  return startOfDay();
+}
+
 function relativeDate(days) {
-  const date = new Date();
-  date.setHours(0, 0, 0, 0);
+  const date = todayStart();
   date.setDate(date.getDate() + days);
   return dateOnly(date);
 }
@@ -255,9 +273,55 @@ function optimisticTrashTask(id, trashed) {
 function scheduledIsDueForNext(entry) {
   const scheduled = dateValue(entry.scheduled);
   if (!scheduled) return true;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return scheduled <= today;
+  return scheduled <= todayStart();
+}
+
+function minDate(...dates) {
+  return dates.filter(Boolean).sort((a, b) => a.getTime() - b.getTime())[0] || null;
+}
+
+function forecastDate(entry) {
+  return minDate(dateValue(entry.scheduled), dateValue(entry.due));
+}
+
+function isTodayAction(entry) {
+  if (!entry.isCurrent || entry.trashed || isDoneEntry(entry)) return false;
+  const today = todayStart();
+  const scheduled = dateValue(entry.scheduled);
+  const due = dateValue(entry.due);
+  return entry.focus || (scheduled && scheduled <= today) || (due && due <= today);
+}
+
+function isForecastAction(entry) {
+  if (!entry.isCurrent || entry.trashed || isDoneEntry(entry)) return false;
+  const date = forecastDate(entry);
+  if (!date) return false;
+  const today = todayStart();
+  return date < today || date <= addDays(today, FORECAST_DAYS);
+}
+
+function compareTaskTitle(a, b) {
+  return String(a.title || '').localeCompare(String(b.title || ''));
+}
+
+function compareTaskPosition(a, b) {
+  const aOrder = Number.isFinite(a.sortOrder) ? a.sortOrder : Number.MAX_SAFE_INTEGER;
+  const bOrder = Number.isFinite(b.sortOrder) ? b.sortOrder : Number.MAX_SAFE_INTEGER;
+  return aOrder - bOrder || compareTaskTitle(a, b);
+}
+
+function compareForecastDate(a, b) {
+  const aDate = forecastDate(a)?.getTime() || Number.MAX_SAFE_INTEGER;
+  const bDate = forecastDate(b)?.getTime() || Number.MAX_SAFE_INTEGER;
+  return aDate - bDate;
+}
+
+function sortByForecastDate(entries) {
+  return [...entries].sort((a, b) => compareForecastDate(a, b) || compareTaskPosition(a, b));
+}
+
+function sortByProject(entries, fallbackCompare = compareTaskPosition) {
+  return [...entries].sort((a, b) => compareProjectBelonging(a, b) || fallbackCompare(a, b) || compareTaskPosition(a, b));
 }
 
 function entryBelongsToListView(entry, viewId) {
@@ -268,20 +332,26 @@ function entryBelongsToListView(entry, viewId) {
 }
 
 function entriesForView(viewId) {
+  const entries = entriesForSearch();
   if (viewId === 'project') return filterEntries(entriesForProject(currentProject), viewId);
   if (viewId === 'projects') return filterEntries(projectRows(), viewId);
   if (viewId === 'review') return filterEntries(entriesForReview(), viewId);
-  if (viewId === 'logbook') return filterEntries(entriesForSearch().filter((entry) => !entry.trashed && isDoneEntry(entry)), viewId);
-  if (viewId === 'trash') return filterEntries(entriesForSearch().filter((entry) => entry.trashed), viewId);
+  if (viewId === 'today') return filterEntries(sortByProject(entries.filter(isTodayAction), (a, b) => compareForecastDate(a, b) || compareTaskPosition(a, b)), viewId);
+  if (viewId === 'forecast') return filterEntries(sortByProject(entries.filter(isForecastAction), (a, b) => compareForecastDate(a, b) || compareTaskPosition(a, b)), viewId);
+  if (viewId === 'logbook') return filterEntries(entries.filter((entry) => !entry.trashed && isDoneEntry(entry)), viewId);
+  if (viewId === 'trash') return filterEntries(entries.filter((entry) => entry.trashed), viewId);
   const view = VIEWS[viewId] || VIEWS.next;
   if (view.area) {
-    return filterEntries(entriesForSearch().filter((entry) => entry.isCurrent && !entry.trashed && entry.area === view.area), viewId);
+    return filterEntries(entries.filter((entry) => entry.isCurrent && !entry.trashed && entry.area === view.area), viewId);
   }
   if (viewId === 'focus') {
-    return filterEntries(entriesForSearch().filter((entry) => entry.isCurrent && !entry.trashed && !isDoneEntry(entry) && entry.focus), viewId);
+    return filterEntries(entries.filter((entry) => entry.isCurrent && !entry.trashed && !isDoneEntry(entry) && entry.focus), viewId);
   }
-  if (['inbox', 'next', 'later', 'scheduled', 'someday', 'waiting'].includes(viewId)) {
-    return filterEntries(entriesForSearch().filter((entry) => entry.isCurrent && !entry.trashed && entryBelongsToListView(entry, viewId)), viewId);
+  if (viewId === 'next') {
+    return filterEntries(sortByProject(entries.filter((entry) => entry.isCurrent && !entry.trashed && entryBelongsToListView(entry, viewId))), viewId);
+  }
+  if (['inbox', 'later', 'scheduled', 'someday', 'waiting'].includes(viewId)) {
+    return filterEntries(entries.filter((entry) => entry.isCurrent && !entry.trashed && entryBelongsToListView(entry, viewId)), viewId);
   }
   const list = state.groups[view.group] || [];
   return filterEntries(list, viewId);
@@ -327,6 +397,31 @@ function isProjectEntry(entry, projectName) {
   );
 }
 
+function projectNameForEntry(entry) {
+  if (!entry) return '';
+  if (entry.project) return entry.project;
+  if (entry.todo === 'PROJ') return entry.title;
+  const path = [...(entry.parentPath || []), ...(entry.outlinePath || [])];
+  return (state?.groups?.projects || [])
+    .map((project) => project.name)
+    .find((name) => name && entry.title !== name && path.includes(name)) || '';
+}
+
+function projectSortRank(projectName) {
+  if (!projectName) return Number.MAX_SAFE_INTEGER;
+  const index = (state?.groups?.projects || []).findIndex((project) => project.name === projectName);
+  return index >= 0 ? index : Number.MAX_SAFE_INTEGER - 1;
+}
+
+function compareProjectBelonging(a, b) {
+  const aProject = projectNameForEntry(a);
+  const bProject = projectNameForEntry(b);
+  if (aProject === bProject) return 0;
+  const aRank = projectSortRank(aProject);
+  const bRank = projectSortRank(bProject);
+  return aRank - bRank || aProject.localeCompare(bProject);
+}
+
 function entriesForProject(projectName) {
   const project = effectiveProjectName(projectName);
   if (!project) return [];
@@ -367,10 +462,7 @@ function allCurrentEntries() {
 }
 
 function daysAgo(days) {
-  const date = new Date();
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() - days);
-  return date;
+  return addDays(todayStart(), -days);
 }
 
 function dateValue(value) {
@@ -385,7 +477,7 @@ function isDoneRecently(entry, days = 7) {
 }
 
 function isStaleOpen(entry, days = ACTIVE_STALE_DAYS) {
-  if (!entry.isCurrent || isDoneEntry(entry)) return false;
+  if (!entry.isCurrent || entry.trashed || isDoneEntry(entry)) return false;
   if (!['inbox', 'next'].includes(entry.list)) return false;
   const created = dateValue(entry.created);
   return Boolean(created && created < daysAgo(days) && !entry.scheduled);
@@ -393,14 +485,11 @@ function isStaleOpen(entry, days = ACTIVE_STALE_DAYS) {
 
 function isDueOrOverdue(entry) {
   const due = dateValue(entry.due);
-  if (!due) return false;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return due <= today;
+  return Boolean(due && due <= todayStart());
 }
 
 function isDeferredReviewDue(entry, days = DEFERRED_REVIEW_DAYS) {
-  if (!entry.isCurrent || isDoneEntry(entry)) return false;
+  if (!entry.isCurrent || entry.trashed || isDoneEntry(entry)) return false;
   if (!['later', 'someday'].includes(entry.list)) return false;
   if (entry.scheduled) return false;
   const created = dateValue(entry.created);
@@ -514,17 +603,18 @@ function entriesForRender(query) {
 }
 
 function setCounts() {
-  const groups = state.groups;
   const entries = entriesForSearch();
   const active = entries.filter((entry) => entry.isCurrent && !entry.trashed && !isDoneEntry(entry));
   const counts = {
     inbox: active.filter((entry) => entry.list === 'inbox').length,
     focus: active.filter((entry) => entry.focus).length,
+    today: entries.filter(isTodayAction).length,
+    forecast: entries.filter(isForecastAction).length,
     actions: active.filter((entry) => entryBelongsToListView(entry, 'next')).length,
     projects: projectRows().length,
     review: entriesForReview().length,
     later: active.filter((entry) => entry.list === 'later').length,
-    stale: active.filter((entry) => entry.list === 'later').length,
+    stale: active.filter(isStaleOpen).length,
     scheduled: active.filter((entry) => entryBelongsToListView(entry, 'scheduled')).length,
     someday: active.filter((entry) => entry.list === 'someday').length,
     waiting: active.filter((entry) => entryBelongsToListView(entry, 'waiting')).length,
@@ -673,34 +763,62 @@ function shortDate(value) {
 }
 
 function dateBucket(entry) {
-  if (!entry.scheduled) return 'No Date';
-  const date = new Date(`${entry.scheduled}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return 'No Date';
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const date = dateValue(entry.scheduled);
+  if (!date) return 'No Date';
+  const today = todayStart();
   const day = today.getDay() || 7;
-  const thisWeek = new Date(today);
-  thisWeek.setDate(today.getDate() - day + 1);
-  const nextWeek = new Date(thisWeek);
-  nextWeek.setDate(thisWeek.getDate() + 7);
-  const twoWeeks = new Date(nextWeek);
-  twoWeeks.setDate(nextWeek.getDate() + 7);
+  const thisWeek = addDays(today, -day + 1);
+  const nextWeek = addDays(thisWeek, 7);
+  const twoWeeks = addDays(nextWeek, 7);
   if (date.getTime() === today.getTime()) return 'Today';
   if (date >= today && date < nextWeek) return 'This Week';
   if (date >= nextWeek && date < twoWeeks) return 'Next Week';
   return 'Future Dates';
 }
 
+function todayBucket(entry) {
+  const today = todayStart();
+  const scheduled = dateValue(entry.scheduled);
+  const due = dateValue(entry.due);
+  if ((due && due < today) || (scheduled && scheduled < today)) return 'Overdue';
+  if (scheduled && scheduled.getTime() === today.getTime()) return 'Scheduled Today';
+  if (due && due.getTime() === today.getTime()) return 'Due Today';
+  if (entry.focus) return 'Focus';
+  return 'Today';
+}
+
+function forecastLabel(date) {
+  if (!date) return 'No Date';
+  const today = todayStart();
+  const tomorrow = addDays(today, 1);
+  if (date < today) return 'Overdue';
+  if (date.getTime() === today.getTime()) return 'Today';
+  if (date.getTime() === tomorrow.getTime()) return 'Tomorrow';
+  return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function forecastBucket(entry) {
+  return forecastLabel(forecastDate(entry));
+}
+
+function forecastOrder(entries) {
+  const labels = [];
+  const seen = new Set();
+  for (const entry of sortByForecastDate(entries)) {
+    const label = forecastBucket(entry);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    labels.push(label);
+  }
+  return labels;
+}
+
 function closedBucket(entry) {
-  if (!entry.closed) return 'Older';
-  const date = new Date(`${entry.closed}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return 'Older';
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const weekStart = new Date(today);
-  weekStart.setDate(today.getDate() - ((today.getDay() || 7) - 1));
-  const lastWeekStart = new Date(weekStart);
-  lastWeekStart.setDate(weekStart.getDate() - 7);
+  const date = dateValue(entry.closed);
+  if (!date) return 'Older';
+  const today = todayStart();
+  const weekStart = addDays(today, -((today.getDay() || 7) - 1));
+  const lastWeekStart = addDays(weekStart, -7);
   if (date.getTime() === today.getTime()) return 'Today';
   if (date >= weekStart) return 'This Week';
   if (date >= lastWeekStart) return 'Last Week';
@@ -1342,6 +1460,12 @@ function renderItems(entries, view) {
   if (currentView === 'review') {
     return renderReview(entries);
   }
+  if (currentView === 'today') {
+    return renderGrouped(entries, todayBucket, ['Overdue', 'Scheduled Today', 'Due Today', 'Focus', 'Today']);
+  }
+  if (currentView === 'forecast') {
+    return renderGrouped(entries, forecastBucket, forecastOrder(entries));
+  }
   if (currentView === 'scheduled') {
     return renderGrouped(entries, dateBucket, ['Today', 'This Week', 'Next Week', 'Future Dates', 'No Date']);
   }
@@ -1624,6 +1748,7 @@ function showShortcuts() {
   window.alert([
     'Create: n, Shift+n',
     'Create in list: i inbox, x next, f focus, p project area',
+    'Navigate: t today, u forecast',
     'Navigate: 1 inbox, 2 focus, 3 next, 4 projects, 5 review, 6 work, 7 part-time, 8 learning, 9 logbook, 0 trash',
     'Search: /',
     'Shortcuts: k',
@@ -1856,6 +1981,16 @@ document.addEventListener('keydown', (event) => {
     const direction = event.key === ']' ? 1 : -1;
     const next = (index + direction + VIEW_ORDER.length) % VIEW_ORDER.length;
     setView(VIEW_ORDER[next]);
+    return;
+  }
+  if (key === 't') {
+    event.preventDefault();
+    setView('today');
+    return;
+  }
+  if (key === 'u') {
+    event.preventDefault();
+    setView('forecast');
     return;
   }
   if (key === '/') {

@@ -466,6 +466,8 @@ select {
 
 .icon.inbox,
 .icon.focus,
+.icon.today,
+.icon.forecast,
 .icon.next,
 .icon.later,
 .icon.scheduled,
@@ -478,6 +480,8 @@ select {
 
 .icon.inbox::before,
 .icon.focus::before,
+.icon.today::before,
+.icon.forecast::before,
 .icon.next::before,
 .icon.later::before,
 .icon.scheduled::before,
@@ -503,6 +507,16 @@ select {
 .icon.focus {
   --mui-sidebar-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M12%2017.27L18.18%2021l-1.64-7.03L22%209.24l-7.19-.61L12%202%209.19%208.63%202%209.24l5.46%204.73L5.82%2021z%22%2F%3E%3C%2Fsvg%3E");
   color: var(--yellow);
+}
+
+.icon.today {
+  --mui-sidebar-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M19%204h-1V2h-2v2H8V2H6v2H5c-1.1%200-2%20.9-2%202v14c0%201.1.9%202%202%202h14c1.1%200%202-.9%202-2V6c0-1.1-.9-2-2-2zM5%2010h14v10H5V10zm0-4h14v2H5V6zm10.6%205.6l1.4%201.4-5.5%205.5L8%2015l1.4-1.4%202.1%202.1%204.1-4.1z%22%2F%3E%3C%2Fsvg%3E");
+  color: var(--green);
+}
+
+.icon.forecast {
+  --mui-sidebar-icon: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M7%202v2H5c-1.1%200-2%20.9-2%202v14c0%201.1.9%202%202%202h14c1.1%200%202-.9%202-2V6c0-1.1-.9-2-2-2h-2V2h-2v2H9V2H7zm12%208v10H5V10h14zM5%208V6h14v2H5zm3%204h3v3H8v-3zm5%200h3v3h-3v-3zm-5%205h3v2H8v-2zm5%200h3v2h-3v-2z%22%2F%3E%3C%2Fsvg%3E");
+  color: var(--next-blue);
 }
 
 .icon.next {
