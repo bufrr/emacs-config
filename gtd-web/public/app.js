@@ -78,6 +78,7 @@ let energyFilter = 'all';
 let editingId = null;
 let creatingTask = false;
 let menuId = null;
+let todayPlannerMode = false;
 let noteMode = localStorage.getItem('gtd-note-mode') || 'preview';
 let draggingId = null;
 let dragOverId = null;
@@ -324,6 +325,57 @@ function sortByProject(entries, fallbackCompare = compareTaskPosition) {
   return [...entries].sort((a, b) => compareProjectBelonging(a, b) || fallbackCompare(a, b) || compareTaskPosition(a, b));
 }
 
+function todoForPlannedEntry(entry) {
+  return entry?.list === 'waiting' || entry?.todo === 'WAIT' ? 'WAIT' : 'TODO';
+}
+
+function isTodayOrPast(value) {
+  const date = dateValue(value);
+  return Boolean(date && date <= todayStart());
+}
+
+function plannedDatePatch(entry, value) {
+  const date = value || '';
+  const patch = {
+    focus: isTodayOrPast(date),
+    todo: todoForPlannedEntry(entry),
+  };
+  if (entry?.due && !entry?.scheduled) {
+    patch.dueAt = date;
+  } else {
+    patch.scheduledAt = date;
+    patch.list = isTodayOrPast(date) ? 'next' : 'scheduled';
+  }
+  return patch;
+}
+
+function plannerPatch(entry, plan) {
+  if (plan === 'today') return plannedDatePatch(entry, relativeDate(0));
+  if (plan === 'tomorrow') return plannedDatePatch(entry, relativeDate(1));
+  if (plan === 'next-week') return plannedDatePatch(entry, nextWeekDate());
+  if (plan === 'no-date') {
+    return {
+      scheduledAt: '',
+      dueAt: '',
+      focus: false,
+      list: entry?.list === 'scheduled' ? 'next' : entry?.list || 'next',
+      todo: todoForPlannedEntry(entry),
+    };
+  }
+  if (plan === 'not-today') {
+    const tomorrow = relativeDate(1);
+    const due = dateValue(entry?.due);
+    return {
+      scheduledAt: tomorrow,
+      dueAt: due && due <= todayStart() ? tomorrow : undefined,
+      list: 'scheduled',
+      focus: false,
+      todo: todoForPlannedEntry(entry),
+    };
+  }
+  return {};
+}
+
 function entryBelongsToListView(entry, viewId) {
   if (viewId === 'next') return entry.list === 'next' || (entry.list === 'scheduled' && scheduledIsDueForNext(entry));
   if (viewId === 'scheduled') return entry.list === 'scheduled' || Boolean(entry.scheduled);
@@ -331,12 +383,25 @@ function entryBelongsToListView(entry, viewId) {
   return entry.list === viewId;
 }
 
+function isTodayPlannerCandidate(entry) {
+  return entry.isCurrent
+    && !entry.trashed
+    && !isDoneEntry(entry)
+    && entryBelongsToListView(entry, 'next')
+    && !isTodayAction(entry);
+}
+
 function entriesForView(viewId) {
   const entries = entriesForSearch();
   if (viewId === 'project') return filterEntries(entriesForProject(currentProject), viewId);
   if (viewId === 'projects') return filterEntries(projectRows(), viewId);
   if (viewId === 'review') return filterEntries(entriesForReview(), viewId);
-  if (viewId === 'today') return filterEntries(sortByProject(entries.filter(isTodayAction), (a, b) => compareForecastDate(a, b) || compareTaskPosition(a, b)), viewId);
+  if (viewId === 'today') {
+    const selected = todayPlannerMode
+      ? entries.filter((entry) => isTodayAction(entry) || isTodayPlannerCandidate(entry))
+      : entries.filter(isTodayAction);
+    return filterEntries(sortByProject(selected, (a, b) => compareForecastDate(a, b) || compareTaskPosition(a, b)), viewId);
+  }
   if (viewId === 'forecast') return filterEntries(sortByProject(entries.filter(isForecastAction), (a, b) => compareForecastDate(a, b) || compareTaskPosition(a, b)), viewId);
   if (viewId === 'logbook') return filterEntries(entries.filter((entry) => !entry.trashed && isDoneEntry(entry)), viewId);
   if (viewId === 'trash') return filterEntries(entries.filter((entry) => entry.trashed), viewId);
@@ -556,6 +621,7 @@ function resetViewState() {
   areaFilter = 'all';
   timeFilter = 'all';
   energyFilter = 'all';
+  todayPlannerMode = false;
   creatingTask = false;
   editingId = null;
   menuId = null;
@@ -721,6 +787,9 @@ function areaChipsHtml() {
 }
 
 function renderChips() {
+  const plannerToggle = currentView === 'today'
+    ? `<button class="chip ${todayPlannerMode ? 'active' : ''}" type="button" data-planner-mode="today">Plan Today</button>`
+    : '';
   const tools = `
     <div class="view-tools" role="group" aria-label="View options">
       <button class="note-toggle ${noteMode === 'hide' ? 'active' : ''}" type="button" data-note-mode="hide" title="Hide notes">-</button>
@@ -736,7 +805,7 @@ function renderChips() {
     return;
   }
   els.chips.hidden = false;
-  els.chips.innerHTML = `${areaChips}${metadataFilters}${tools}`;
+  els.chips.innerHTML = `${plannerToggle}${areaChips}${metadataFilters}${tools}`;
 }
 
 function progress(entry, statsOverride = null) {
@@ -777,6 +846,7 @@ function dateBucket(entry) {
 }
 
 function todayBucket(entry) {
+  if (todayPlannerMode && isTodayPlannerCandidate(entry)) return 'Available Next Actions';
   const today = todayStart();
   const scheduled = dateValue(entry.scheduled);
   const due = dateValue(entry.due);
@@ -811,6 +881,15 @@ function forecastOrder(entries) {
     labels.push(label);
   }
   return labels;
+}
+
+function forecastSectionAttrs(label, entries) {
+  const firstDate = forecastDate(entries?.[0]);
+  const date = label === 'Today'
+    ? todayStart()
+    : (label === 'Tomorrow' ? addDays(todayStart(), 1) : firstDate);
+  if (!date || date < todayStart()) return '';
+  return `data-drop-plan-date="${dateOnly(date)}" data-drop-plan-label="${esc(label)}"`;
 }
 
 function closedBucket(entry) {
@@ -1235,6 +1314,23 @@ function taskMenu(entry) {
   `;
 }
 
+function plannerActions(entry) {
+  if (!['today', 'next', 'forecast'].includes(currentView)) return '';
+  if (!entry.isCurrent || entry.trashed || isDoneEntry(entry) || entry.todo === 'PROJ') return '';
+  const plans = [
+    ['today', 'Today'],
+    ['tomorrow', 'Tomorrow'],
+    ['next-week', 'Next Week'],
+    ['no-date', 'No Date'],
+    ['not-today', 'Not Today'],
+  ];
+  return `
+    <div class="planner-actions" aria-label="Plan task">
+      ${plans.map(([value, label]) => `<button type="button" data-action="PLAN" data-plan="${value}" data-id="${entry.id}">${label}</button>`).join('')}
+    </div>
+  `;
+}
+
 function task(entry) {
   if (editingId === entry.id) return editTask(entry);
   const isProject = entry.todo === 'PROJ';
@@ -1257,6 +1353,7 @@ function task(entry) {
       <div class="task-main">
         <div class="title-row">${visibleState}${date}${title}${note}</div>
         ${meta(entry)}
+        ${plannerActions(entry)}
         ${noteHtml(entry)}
         ${progress(entry)}
       </div>
@@ -1276,7 +1373,7 @@ function emptyCard(title) {
   `;
 }
 
-function renderGrouped(entries, bucketFn, order) {
+function renderGrouped(entries, bucketFn, order, options = {}) {
   const buckets = new Map();
   for (const entry of entries) {
     const label = bucketFn(entry);
@@ -1287,10 +1384,14 @@ function renderGrouped(entries, bucketFn, order) {
     ...order.filter((label) => buckets.has(label)),
     ...[...buckets.keys()].filter((label) => !order.includes(label)).sort(),
   ];
-  return labels.map((label) => `
-    <div class="section-title"><h2>${esc(label)}</h2><span>${buckets.get(label).length}</span></div>
-    <div class="items">${buckets.get(label).map(task).join('')}</div>
-  `).join('');
+  return labels.map((label) => {
+    const bucketEntries = buckets.get(label);
+    const attrs = options.sectionAttrs ? options.sectionAttrs(label, bucketEntries) : '';
+    return `
+    <div class="section-title"${attrs ? ` ${attrs}` : ''}><h2>${esc(label)}</h2><span>${bucketEntries.length}</span></div>
+    <div class="items">${bucketEntries.map(task).join('')}</div>
+  `;
+  }).join('');
 }
 
 function projectBucket(entry) {
@@ -1461,10 +1562,10 @@ function renderItems(entries, view) {
     return renderReview(entries);
   }
   if (currentView === 'today') {
-    return renderGrouped(entries, todayBucket, ['Overdue', 'Scheduled Today', 'Due Today', 'Focus', 'Today']);
+    return renderGrouped(entries, todayBucket, ['Overdue', 'Scheduled Today', 'Due Today', 'Focus', 'Today', 'Available Next Actions']);
   }
   if (currentView === 'forecast') {
-    return renderGrouped(entries, forecastBucket, forecastOrder(entries));
+    return renderGrouped(entries, forecastBucket, forecastOrder(entries), { sectionAttrs: forecastSectionAttrs });
   }
   if (currentView === 'scheduled') {
     return renderGrouped(entries, dateBucket, ['Today', 'This Week', 'Next Week', 'Future Dates', 'No Date']);
@@ -1635,12 +1736,16 @@ async function reorderDrop(container, draggedId, targetId, position) {
 }
 
 function navDropTarget(target) {
-  return target?.closest?.('[data-drop-list], [data-drop-area], [data-drop-action], [data-drop-focus], [data-drop-project]') || null;
+  return target?.closest?.('[data-drop-plan-date], [data-drop-list], [data-drop-area], [data-drop-action], [data-drop-focus], [data-drop-project]') || null;
 }
 
 async function dropOnNavTarget(id, target) {
   const entry = entryById(id);
   if (!entry || !target) return;
+  if (target.dataset.dropPlanDate) {
+    await patchTask(id, plannedDatePatch(entry, target.dataset.dropPlanDate));
+    return;
+  }
   if (target.dataset.dropList) {
     const list = target.dataset.dropList;
     await patchTask(id, {
@@ -1794,6 +1899,12 @@ window.addEventListener('hashchange', () => {
 els.search.addEventListener('input', render);
 
 els.chips.addEventListener('click', (event) => {
+  const planner = event.target.closest('[data-planner-mode]');
+  if (planner) {
+    todayPlannerMode = !todayPlannerMode;
+    render();
+    return;
+  }
   const area = event.target.closest('[data-area]');
   if (area) {
     areaFilter = area.dataset.area;
@@ -2180,6 +2291,8 @@ els.content.addEventListener('click', async (event) => {
       await patchTask(id, { energy: button.dataset.value });
     } else if (action === 'SET_REPEAT') {
       await patchTask(id, { repeat: button.dataset.value });
+    } else if (action === 'PLAN') {
+      await patchTask(id, plannerPatch(entry, button.dataset.plan));
     } else if (action === 'SET_DUE') {
       await patchTask(id, { dueAt: button.dataset.value });
     } else if (action === 'SET_AREA') {

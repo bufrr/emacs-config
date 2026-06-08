@@ -273,6 +273,36 @@ async function dragTaskToNav(page, title, view) {
   await waitForNoTask(page, title);
 }
 
+async function clickPlannerAction(page, title, plan) {
+  const row = await waitForTask(page, title);
+  await row.hover();
+  const button = row.locator(`[data-action="PLAN"][data-plan="${attr(plan)}"]`);
+  await button.waitFor({ state: 'visible', timeout: 5_000 });
+  await button.click();
+}
+
+async function dragTaskToForecastSection(page, title, label) {
+  const row = await waitForTask(page, title);
+  const target = page.locator(`.section-title[data-drop-plan-label="${attr(label)}"]`);
+  await target.waitFor({ state: 'visible', timeout: 5_000 });
+  const grip = await row.locator('.grip').boundingBox();
+  const targetBox = await target.boundingBox();
+  assert.ok(grip, `Missing drag grip for ${title}`);
+  assert.ok(targetBox, `Missing forecast section target ${label}`);
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 10 });
+  await page.mouse.up();
+  await page.waitForFunction(({ expectedTitle, expectedLabel }) => {
+    let currentSection = '';
+    for (const node of document.querySelectorAll('.section-title, .task[data-task-title]')) {
+      if (node.classList.contains('section-title')) currentSection = node.querySelector('h2')?.textContent.trim() || '';
+      if (node.dataset?.taskTitle === expectedTitle) return currentSection === expectedLabel;
+    }
+    return false;
+  }, { expectedTitle: title, expectedLabel: label }, { timeout: 5_000 });
+}
+
 async function clickProject(page, title) {
   const nav = page.locator(`[data-project-link="${attr(title)}"]`);
   assert.equal(await nav.count(), 1, `Expected one project link for ${title}`);
@@ -349,6 +379,7 @@ async function runBrowserSuite(baseUrl) {
   const gamma = slugTitle(`E2E ${suffix} gamma`);
   const doneUndo = slugTitle(`E2E ${suffix} done undo`);
   const routine = slugTitle(`E2E ${suffix} routine`);
+  const planner = slugTitle(`E2E ${suffix} planner`);
   const project = slugTitle(`E2E ${suffix} project`);
   const projectCopy = `${project} Copy`;
 
@@ -391,6 +422,7 @@ async function runBrowserSuite(baseUrl) {
     await quickAdd(page, gamma);
     await quickAdd(page, doneUndo);
     await quickAdd(page, routine);
+    await quickAdd(page, planner);
     await quickAdd(page, project);
 
     log('E2E: area chips');
@@ -487,6 +519,34 @@ async function runBrowserSuite(baseUrl) {
     assert.equal(await page.locator('#view-title').innerText(), 'Forecast');
     await waitForTask(page, alphaEdited);
     assert.ok((await page.$$eval('.section-title h2', (nodes) => nodes.map((node) => node.textContent.trim()))).includes('Today'));
+    await clickNav(page, 'next');
+
+    log('E2E: today planner controls and forecast date drag');
+    await clickPlannerAction(page, planner, 'today');
+    await clickNav(page, 'today');
+    await waitForTask(page, planner);
+    await page.locator('[data-planner-mode="today"]').click();
+    await waitForTask(page, gamma);
+    assert.ok((await page.$$eval('.section-title h2', (nodes) => nodes.map((node) => node.textContent.trim()))).includes('Available Next Actions'));
+    await clickPlannerAction(page, planner, 'not-today');
+    await waitForNoTask(page, planner);
+    await clickNav(page, 'forecast');
+    await waitForTask(page, planner);
+    assert.ok((await page.$$eval('.section-title h2', (nodes) => nodes.map((node) => node.textContent.trim()))).includes('Tomorrow'));
+    await dragTaskToForecastSection(page, planner, 'Today');
+    await clickNav(page, 'today');
+    await waitForTask(page, planner);
+    await clickPlannerAction(page, planner, 'no-date');
+    await waitForNoTask(page, planner);
+    await clickNav(page, 'next');
+    await waitForTask(page, planner);
+    await clickPlannerAction(page, planner, 'next-week');
+    await waitForNoTask(page, planner);
+    await clickNav(page, 'forecast');
+    await waitForTask(page, planner);
+    await clickPlannerAction(page, planner, 'tomorrow');
+    await waitForTask(page, planner);
+    assert.ok((await page.$$eval('.section-title h2', (nodes) => nodes.map((node) => node.textContent.trim()))).includes('Tomorrow'));
     await clickNav(page, 'next');
 
     log('E2E: scheduled move and unschedule');

@@ -317,7 +317,8 @@ select {
 }
 
 .rail-link.drag-over-nav,
-.footer-link.drag-over-nav {
+.footer-link.drag-over-nav,
+.section-title.drag-over-nav {
   background: rgba(46, 136, 247, 0.2);
   border-left-color: var(--blue);
   box-shadow: inset 0 0 0 1px rgba(46, 136, 247, 0.25);
@@ -1131,6 +1132,13 @@ body.project-mode .quick-add {
   font-size: 13px;
 }
 
+.section-title[data-drop-plan-date] {
+  min-height: 24px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  cursor: copy;
+}
+
 .status-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(120px, 1fr));
@@ -1679,6 +1687,43 @@ button.check:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   color: rgba(229, 230, 234, 0.5);
+}
+
+.planner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 20px;
+  margin: 2px 0 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+
+.task:hover .planner-actions,
+.task:focus-within .planner-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.planner-actions button {
+  min-height: 18px;
+  border: 1px solid rgba(197, 198, 202, 0.2);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(229, 230, 234, 0.6);
+  padding: 0 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.planner-actions button:hover,
+.planner-actions button:focus {
+  border-color: rgba(46, 136, 247, 0.55);
+  background: rgba(46, 136, 247, 0.16);
+  color: rgba(255, 255, 255, 0.86);
 }
 
 .task-menu-cell {
@@ -2574,6 +2619,11 @@ kbd {
     flex-wrap: wrap;
     background: transparent;
     padding-left: 0;
+  }
+
+  .planner-actions {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .task-menu {
