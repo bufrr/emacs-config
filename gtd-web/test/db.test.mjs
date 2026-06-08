@@ -78,6 +78,48 @@ test('SQLite store owns UI create and status updates', async () => {
   store.close();
 });
 
+test('SQLite store owns source library and linked reading tasks', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'gtd-db-'));
+  const currentFile = path.join(dir, 'current.org');
+  const archiveFile = path.join(dir, 'archive.org');
+  const dbFile = path.join(dir, 'gtd.sqlite');
+  await writeFile(currentFile, '* Learning\n', 'utf8');
+  await writeFile(archiveFile, '', 'utf8');
+
+  const store = await createGtdStore({ currentFile, archiveFile, dbFile });
+  const source = store.addSource({
+    url: 'https://example.com/ai-workflow',
+    type: 'article',
+    title: 'AI workflow notes',
+    summary: 'How to turn research sources into tasks.',
+    rawText: 'Captured article body.',
+    topics: ['AI', 'workflow'],
+  });
+  let state = store.readState();
+  assert.equal(state.sources.inbox.some((entry) => entry.id === source.id), true);
+  assert.equal(state.sources.counts.sourceInbox, 1);
+  assert.equal(state.sources.articles.some((entry) => entry.title === 'AI workflow notes'), true);
+
+  store.updateSource(source.id, { status: 'reading' });
+  state = store.readState();
+  assert.equal(state.sources.reading.some((entry) => entry.id === source.id), true);
+  assert.equal(state.sources.inbox.some((entry) => entry.id === source.id), false);
+
+  const task = store.createTaskFromSource(source.id);
+  state = store.readState();
+  const sourceAfterTask = state.sources.reading.find((entry) => entry.id === source.id);
+  assert.equal(sourceAfterTask.taskIds.includes(task.id), true);
+  const linkedTask = state.groups.actions.find((entry) => entry.id === task.id);
+  assert.equal(linkedTask.title, 'Read: AI Workflow Notes');
+  assert.deepEqual(linkedTask.tags, ['article', 'reading', 'AI', 'workflow']);
+  assert.match(linkedTask.notes, /https:\/\/example.com\/ai-workflow/);
+
+  store.updateSource(source.id, { status: 'processed' });
+  state = store.readState();
+  assert.equal(state.sources.processed.some((entry) => entry.id === source.id), true);
+  store.close();
+});
+
 test('SQLite store exports current UI data as Org text', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'gtd-db-'));
   const currentFile = path.join(dir, 'current.org');

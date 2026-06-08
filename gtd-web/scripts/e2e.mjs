@@ -390,6 +390,12 @@ async function assertContextPanel(page, tagName) {
   assert.equal(await page.locator('#view-subtitle').innerText(), 'Context');
 }
 
+async function assertSourceCard(page, title) {
+  const card = page.locator('.source-card').filter({ hasText: title });
+  await card.waitFor({ state: 'visible', timeout: 5_000 });
+  return card;
+}
+
 async function runBrowserSuite(baseUrl) {
   let browser;
   try {
@@ -607,6 +613,39 @@ async function runBrowserSuite(baseUrl) {
     await clickNav(page, 'twitter');
     assert.equal(await page.locator('#view-title').innerText(), 'Twitter');
     await waitForTask(page, twitterRead);
+    await clickNav(page, 'next');
+
+    log('E2E: source library import, status, detail and linked GTD task');
+    await clickNav(page, 'sourceInbox');
+    assert.equal(await page.locator('#view-title').innerText(), 'Source Inbox');
+    await page.locator('[data-source-import] input[name="url"]').fill(`${baseUrl}/`);
+    await page.locator('[data-source-import] select[name="type"]').selectOption('article');
+    const importResponse = page.waitForResponse((response) =>
+      response.url().endsWith('/api/sources') && response.request().method() === 'POST' && response.status() === 201
+    );
+    await page.locator('[data-source-import] button[type="submit"]').click();
+    const importedSource = await (await importResponse).json();
+    await page.waitForFunction((sourceId) => location.hash === `#source/${sourceId}`, importedSource.id);
+    assert.equal(await page.locator('#view-title').innerText(), 'GTD');
+    assert.match(await page.locator('#view-subtitle').innerText(), /Article .* Unread/);
+    await page.locator('[data-source-status="reading"]').click();
+    await page.waitForFunction(() => /Reading/.test(document.querySelector('#view-subtitle')?.textContent || ''));
+    await clickNav(page, 'sourceReading');
+    await assertSourceCard(page, 'GTD');
+    await page.locator('.source-card').filter({ hasText: 'GTD' }).locator('[data-source-open]').click();
+    await page.waitForFunction(() => location.hash.startsWith('#source/'));
+    await page.locator('[data-source-task]').click();
+    await clickNav(page, 'next');
+    await waitForTask(page, 'Read: GTD');
+    await clickNav(page, 'sourceReading');
+    const processedResponse = page.waitForResponse((response) =>
+      response.url().includes('/api/sources/') && response.request().method() === 'PATCH' && response.status() === 200
+    );
+    await page.locator('.source-card').filter({ hasText: 'GTD' }).locator('[data-source-status="processed"]').click();
+    await processedResponse;
+    await page.waitForFunction(() => ![...document.querySelectorAll('.source-card')].some((card) => /GTD/.test(card.textContent || '')));
+    await clickNav(page, 'sourceProcessed');
+    await assertSourceCard(page, 'GTD');
     await clickNav(page, 'next');
 
     log('E2E: scheduled move and unschedule');

@@ -10,6 +10,8 @@ const OPEN_STATES = new Set(['TODO', 'NEXT', 'PROJ', 'WAIT']);
 const TODO_STATES = new Set(['TODO', 'NEXT', 'PROJ', 'WAIT', 'DONE', 'CANCELLED']);
 const LISTS = new Set(['inbox', 'next', 'later', 'twitter', 'scheduled', 'someday', 'waiting']);
 const REPEATS = new Set(['', 'daily', 'weekly', 'monthly']);
+const SOURCE_TYPES = new Set(['twitter', 'article', 'youtube', 'pdf', 'github', 'doc', 'other']);
+const SOURCE_STATUSES = new Set(['unread', 'reading', 'processed', 'archived']);
 const AREA_SECTIONS = new Map([
   ['work', 'Work'],
   ['parttime', 'Part-Time'],
@@ -105,6 +107,16 @@ function cleanList(value, fallback = 'next') {
   return LISTS.has(value) ? value : fallback;
 }
 
+function cleanSourceType(value, fallback = 'other') {
+  const type = String(value || '').trim().toLowerCase();
+  return SOURCE_TYPES.has(type) ? type : fallback;
+}
+
+function cleanSourceStatus(value, fallback = 'unread') {
+  const status = String(value || '').trim().toLowerCase();
+  return SOURCE_STATUSES.has(status) ? status : fallback;
+}
+
 function listForImportedEntry(entry) {
   if (entry.section === 'Inbox') return 'inbox';
   if (entry.section === 'Ideas') return 'someday';
@@ -190,6 +202,35 @@ function prepareDb(file) {
       type TEXT NOT NULL,
       payload_json TEXT NOT NULL,
       created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sources (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL DEFAULT 'other',
+      url TEXT NOT NULL,
+      title TEXT NOT NULL,
+      author TEXT,
+      status TEXT NOT NULL DEFAULT 'unread',
+      summary TEXT,
+      raw_text TEXT,
+      topics_json TEXT NOT NULL DEFAULT '[]',
+      published_at TEXT,
+      fetched_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sources_url ON sources(url);
+    CREATE INDEX IF NOT EXISTS idx_sources_type ON sources(type);
+    CREATE INDEX IF NOT EXISTS idx_sources_status ON sources(status);
+
+    CREATE TABLE IF NOT EXISTS source_tasks (
+      source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      relation TEXT NOT NULL DEFAULT 'read',
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (source_id, task_id, relation)
     );
   `);
   ensureColumn(db, 'tasks', 'list', "list TEXT NOT NULL DEFAULT 'next'");
@@ -310,6 +351,27 @@ function rowsToEntries(rows) {
   return entries.map(({ parent, children, ...entry }) => entry);
 }
 
+function rowsToSources(rows) {
+  return rows.map((row) => ({
+    id: row.id,
+    type: cleanSourceType(row.type),
+    url: row.url,
+    title: row.title,
+    author: row.author || '',
+    status: cleanSourceStatus(row.status),
+    summary: row.summary || '',
+    rawText: row.raw_text || '',
+    topics: fromJson(row.topics_json),
+    published: dateText(row.published_at),
+    fetched: dateText(row.fetched_at),
+    created: dateText(row.created_at),
+    updated: dateText(row.updated_at),
+    archived: Boolean(row.archived_at || row.status === 'archived'),
+    archivedAt: row.archived_at,
+    taskIds: fromJson(row.task_ids_json),
+  }));
+}
+
 function startOfToday(now = new Date()) {
   const date = new Date(now);
   date.setHours(0, 0, 0, 0);
@@ -335,6 +397,42 @@ function sortEntries(entries) {
     if (orderA !== orderB) return orderA - orderB;
     return a.title.localeCompare(b.title);
   });
+}
+
+function sortSources(sources) {
+  return [...sources].sort((a, b) => {
+    const statusA = a.status === 'unread' ? 0 : a.status === 'reading' ? 1 : a.status === 'processed' ? 2 : 3;
+    const statusB = b.status === 'unread' ? 0 : b.status === 'reading' ? 1 : b.status === 'processed' ? 2 : 3;
+    if (statusA !== statusB) return statusA - statusB;
+    return String(b.updated || b.created || '').localeCompare(String(a.updated || a.created || ''))
+      || String(a.title || '').localeCompare(String(b.title || ''));
+  });
+}
+
+function buildSourceGroups(sources) {
+  const active = sources.filter((source) => source.status !== 'archived' && !source.archived);
+  const groups = {
+    all: sortSources(active),
+    inbox: sortSources(active.filter((source) => source.status === 'unread')),
+    reading: sortSources(active.filter((source) => source.status === 'reading')),
+    twitter: sortSources(active.filter((source) => source.type === 'twitter')),
+    articles: sortSources(active.filter((source) => ['article', 'github', 'doc', 'other'].includes(source.type))),
+    videos: sortSources(active.filter((source) => source.type === 'youtube')),
+    pdfs: sortSources(active.filter((source) => source.type === 'pdf')),
+    processed: sortSources(active.filter((source) => source.status === 'processed')),
+    archived: sortSources(sources.filter((source) => source.status === 'archived' || source.archived)),
+    counts: {},
+  };
+  groups.counts = {
+    sourceInbox: groups.inbox.length,
+    sourceReading: groups.reading.length,
+    sourceTwitter: groups.twitter.length,
+    sourceArticles: groups.articles.length,
+    sourceVideos: groups.videos.length,
+    sourcePdfs: groups.pdfs.length,
+    sourceProcessed: groups.processed.length,
+  };
+  return groups;
 }
 
 function buildGroups(entries, config) {
@@ -466,6 +564,12 @@ export async function createGtdStore(config) {
       scheduled_at, closed_at, archived, trashed_at, source_file, source_line
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const insertSource = db.prepare(`
+    INSERT INTO sources (
+      id, type, url, title, author, status, summary, raw_text, topics_json,
+      published_at, fetched_at, created_at, updated_at, archived_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
   const insertEvent = db.prepare('INSERT INTO events(id, task_id, type, payload_json, created_at) VALUES(?, ?, ?, ?, ?)');
 
   function logEvent(taskId, type, payload) {
@@ -476,8 +580,29 @@ export async function createGtdStore(config) {
     return db.prepare('SELECT * FROM tasks ORDER BY sort_order, created_at, title').all();
   }
 
+  function allSourceRows() {
+    const rows = db.prepare('SELECT * FROM sources ORDER BY updated_at DESC, created_at DESC, title').all();
+    const taskIdsBySource = new Map();
+    for (const link of db.prepare('SELECT source_id, task_id FROM source_tasks ORDER BY created_at').all()) {
+      if (!taskIdsBySource.has(link.source_id)) taskIdsBySource.set(link.source_id, []);
+      taskIdsBySource.get(link.source_id).push(link.task_id);
+    }
+    return rows.map((row) => ({
+      ...row,
+      task_ids_json: toJson(taskIdsBySource.get(row.id) || []),
+    }));
+  }
+
   function getTask(id) {
     return db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+  }
+
+  function getSource(id) {
+    return db.prepare('SELECT * FROM sources WHERE id = ?').get(id);
+  }
+
+  function getSourceByUrl(url) {
+    return db.prepare('SELECT * FROM sources WHERE url = ?').get(url);
   }
 
   async function importOrgIfEmpty() {
@@ -548,6 +673,7 @@ export async function createGtdStore(config) {
     readState() {
       const entries = rowsToEntries(allRows());
       const groups = buildGroups(entries, config);
+      const sources = buildSourceGroups(rowsToSources(allSourceRows()));
       return {
         files: {
           db: dbFile,
@@ -562,6 +688,7 @@ export async function createGtdStore(config) {
         },
         generatedAt: new Date().toISOString(),
         groups,
+        sources,
       };
     },
 
@@ -609,6 +736,112 @@ export async function createGtdStore(config) {
       );
       logEvent(id, 'task_created', { title, area, section, list, repeat });
       return { ok: true, id, title };
+    },
+
+    addSource(input) {
+      const url = String(input.url || '').trim();
+      if (!url) throw new Error('Source URL is required');
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(url);
+      } catch {
+        throw new Error('Source URL is invalid');
+      }
+      if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('Source URL must be http or https');
+      const existing = getSourceByUrl(parsedUrl.href);
+      if (existing) {
+        const updated = this.updateSource(existing.id, input);
+        return { ...updated, existing: true };
+      }
+      const title = String(input.title || parsedUrl.href).trim();
+      if (!title) throw new Error('Source title is required');
+      const created = nowIso();
+      const id = randomUUID();
+      const status = cleanSourceStatus(input.status);
+      insertSource.run(
+        id,
+        cleanSourceType(input.type),
+        parsedUrl.href,
+        title,
+        input.author || null,
+        status,
+        input.summary || null,
+        input.rawText || null,
+        toJson(input.topics || []),
+        input.publishedAt ? isoFromDate(input.publishedAt) : null,
+        input.fetchedAt ? isoFromDate(input.fetchedAt) : null,
+        created,
+        created,
+        status === 'archived' ? created : null,
+      );
+      logEvent(null, 'source_created', { id, title, url: parsedUrl.href, type: cleanSourceType(input.type), status });
+      return { ok: true, id, title };
+    },
+
+    updateSource(id, input) {
+      const source = getSource(id);
+      if (!source) throw new Error('Source not found');
+      const status = Object.hasOwn(input, 'status')
+        ? cleanSourceStatus(input.status, source.status)
+        : cleanSourceStatus(source.status);
+      const archivedAt = status === 'archived'
+        ? (source.archived_at || nowIso())
+        : null;
+      db.prepare(`
+        UPDATE sources
+        SET type = ?, title = ?, author = ?, status = ?, summary = ?, raw_text = ?,
+            topics_json = ?, published_at = ?, fetched_at = ?, updated_at = ?, archived_at = ?
+        WHERE id = ?
+      `).run(
+        Object.hasOwn(input, 'type') ? cleanSourceType(input.type, source.type) : source.type,
+        Object.hasOwn(input, 'title') ? String(input.title || '').trim() || source.title : source.title,
+        Object.hasOwn(input, 'author') ? input.author || null : source.author,
+        status,
+        Object.hasOwn(input, 'summary') ? input.summary || null : source.summary,
+        Object.hasOwn(input, 'rawText') ? input.rawText || null : source.raw_text,
+        Object.hasOwn(input, 'topics') ? toJson(input.topics || []) : source.topics_json,
+        Object.hasOwn(input, 'publishedAt') ? (input.publishedAt ? isoFromDate(input.publishedAt) : null) : source.published_at,
+        Object.hasOwn(input, 'fetchedAt') ? (input.fetchedAt ? isoFromDate(input.fetchedAt) : null) : source.fetched_at,
+        nowIso(),
+        archivedAt,
+        id,
+      );
+      logEvent(null, 'source_updated', { id, title: source.title, status });
+      return { ok: true, id, title: Object.hasOwn(input, 'title') ? input.title || source.title : source.title, status };
+    },
+
+    deleteSource(id) {
+      const source = getSource(id);
+      if (!source) throw new Error('Source not found');
+      db.prepare('DELETE FROM sources WHERE id = ?').run(id);
+      logEvent(null, 'source_deleted', { id, title: source.title });
+      return { ok: true, id, title: source.title };
+    },
+
+    createTaskFromSource(sourceId, input = {}) {
+      const source = getSource(sourceId);
+      if (!source) throw new Error('Source not found');
+      const type = cleanSourceType(source.type);
+      const topics = fromJson(source.topics_json);
+      const tags = [...new Set([type, 'reading', ...topics].filter(Boolean))];
+      const notes = [
+        source.url,
+        source.summary,
+        source.raw_text ? source.raw_text.slice(0, 4000) : '',
+      ].filter(Boolean).join('\n\n');
+      const task = this.addTask({
+        title: input.title || `Read: ${source.title}`,
+        area: input.area || 'learn',
+        list: input.list || 'next',
+        tags: input.tags || tags,
+        notes: input.notes || notes,
+        project: input.project || '',
+      });
+      db.prepare('INSERT OR IGNORE INTO source_tasks(source_id, task_id, relation, created_at) VALUES(?, ?, ?, ?)')
+        .run(sourceId, task.id, input.relation || 'read', nowIso());
+      if (source.status === 'unread') this.updateSource(sourceId, { status: 'reading' });
+      logEvent(task.id, 'task_created_from_source', { sourceId, sourceTitle: source.title });
+      return { ok: true, id: task.id, title: task.title, sourceId };
     },
 
     createNextRepeatTask(task, closedAt = nowIso()) {
@@ -830,6 +1063,7 @@ export async function createGtdStore(config) {
     },
 
     getTask,
+    getSource,
 
     exportOrgText() {
       const rows = allRows();

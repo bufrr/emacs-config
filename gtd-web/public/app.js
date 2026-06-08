@@ -15,11 +15,18 @@ const VIEWS = {
   parttime: { title: 'Part-Time', subtitle: 'Project actions', area: 'parttime', empty: 'Part-Time list is empty' },
   learn: { title: 'Learning', subtitle: 'Project actions', area: 'learn', empty: 'Learning list is empty' },
   other: { title: 'Other', subtitle: 'Project actions', area: 'other', empty: 'Other list is empty' },
+  sourceInbox: { title: 'Source Inbox', subtitle: 'Captured links to process', sourceGroup: 'inbox', empty: 'Source inbox is empty' },
+  sourceReading: { title: 'Reading', subtitle: 'Sources currently being read', sourceGroup: 'reading', empty: 'Reading list is empty' },
+  sourceTwitter: { title: 'Twitter Sources', subtitle: 'Threads and posts', sourceGroup: 'twitter', empty: 'No Twitter sources' },
+  sourceArticles: { title: 'Articles', subtitle: 'Articles, docs, and web pages', sourceGroup: 'articles', empty: 'No article sources' },
+  sourceVideos: { title: 'Videos', subtitle: 'YouTube and video links', sourceGroup: 'videos', empty: 'No video sources' },
+  sourcePdfs: { title: 'PDFs', subtitle: 'PDF reading queue', sourceGroup: 'pdfs', empty: 'No PDF sources' },
+  sourceProcessed: { title: 'Processed Sources', subtitle: 'Sources already reviewed', sourceGroup: 'processed', empty: 'No processed sources' },
   logbook: { title: 'Logbook', subtitle: 'Recently completed', group: 'completed', section: 'Done', empty: 'No completed tasks found', showClosed: true },
   trash: { title: 'Trash', subtitle: '... to be deleted', group: 'trash', empty: 'Trash is empty.' },
 };
 
-const VIEW_ORDER = ['inbox', 'focus', 'today', 'forecast', 'next', 'later', 'twitter', 'scheduled', 'someday', 'waiting', 'projects', 'review', 'work', 'parttime', 'learn', 'other', 'logbook', 'trash'];
+const VIEW_ORDER = ['inbox', 'focus', 'today', 'forecast', 'next', 'later', 'twitter', 'scheduled', 'someday', 'waiting', 'projects', 'review', 'work', 'parttime', 'learn', 'other', 'sourceInbox', 'sourceReading', 'sourceTwitter', 'sourceArticles', 'sourceVideos', 'sourcePdfs', 'sourceProcessed', 'logbook', 'trash'];
 
 const LIST_LABELS = {
   inbox: 'Inbox',
@@ -64,6 +71,21 @@ const REPEAT_LABELS = {
   weekly: 'weekly',
   monthly: 'monthly',
 };
+const SOURCE_TYPE_LABELS = {
+  twitter: 'Twitter',
+  article: 'Article',
+  youtube: 'Video',
+  pdf: 'PDF',
+  github: 'GitHub',
+  doc: 'Doc',
+  other: 'Source',
+};
+const SOURCE_STATUS_LABELS = {
+  unread: 'Unread',
+  reading: 'Reading',
+  processed: 'Processed',
+  archived: 'Archived',
+};
 const DEFAULT_CONTEXT_TAGS = ['AI', 'blockchain', 'Errand', 'gateway', 'Home', 'Important', 'Pending', 'work', 'Work'];
 const DONE_TODOS = new Set(['DONE', 'CANCELLED']);
 const ACTIVE_STALE_DAYS = 14;
@@ -74,6 +96,7 @@ let state = null;
 let currentView = 'next';
 let currentProject = '';
 let currentContext = 'all';
+let currentSourceId = '';
 let areaFilter = 'all';
 let tagFilter = 'all';
 let timeFilter = 'all';
@@ -395,6 +418,14 @@ function isTodayPlannerCandidate(entry) {
 }
 
 function entriesForView(viewId) {
+  const view = VIEWS[viewId];
+  if (viewId === 'source') {
+    const source = sourceById(currentSourceId);
+    return source ? [source] : [];
+  }
+  if (view?.sourceGroup) {
+    return sourcesForGroup(view.sourceGroup);
+  }
   const entries = entriesForSearch();
   if (viewId === 'context') {
     const tagged = entries.filter((entry) => {
@@ -417,9 +448,9 @@ function entriesForView(viewId) {
   if (viewId === 'forecast') return filterEntries(sortByProject(entries.filter(isForecastAction), (a, b) => compareForecastDate(a, b) || compareTaskPosition(a, b)), viewId);
   if (viewId === 'logbook') return filterEntries(entries.filter((entry) => !entry.trashed && isDoneEntry(entry)), viewId);
   if (viewId === 'trash') return filterEntries(entries.filter((entry) => entry.trashed), viewId);
-  const view = VIEWS[viewId] || VIEWS.next;
-  if (view.area) {
-    return filterEntries(entries.filter((entry) => entry.isCurrent && !entry.trashed && entry.area === view.area), viewId);
+  const taskView = view || VIEWS.next;
+  if (taskView.area) {
+    return filterEntries(entries.filter((entry) => entry.isCurrent && !entry.trashed && entry.area === taskView.area), viewId);
   }
   if (viewId === 'focus') {
     return filterEntries(entries.filter((entry) => entry.isCurrent && !entry.trashed && !isDoneEntry(entry) && entry.focus), viewId);
@@ -430,7 +461,7 @@ function entriesForView(viewId) {
   if (['inbox', 'later', 'twitter', 'scheduled', 'someday', 'waiting'].includes(viewId)) {
     return filterEntries(entries.filter((entry) => entry.isCurrent && !entry.trashed && entryBelongsToListView(entry, viewId)), viewId);
   }
-  const list = state.groups[view.group] || [];
+  const list = state.groups[taskView.group] || [];
   return filterEntries(list, viewId);
 }
 
@@ -474,6 +505,24 @@ function contextLabel(name) {
   if (name === 'all') return 'All Contexts';
   if (name === '-') return 'No Tags';
   return name || 'Context';
+}
+
+function sourceSlug(id) {
+  return encodeURIComponent(id);
+}
+
+function sourceIdFromSlug(slug) {
+  try {
+    return decodeURIComponent(slug || '');
+  } catch {
+    return slug || '';
+  }
+}
+
+function sourceFromHash(hashValue) {
+  const hash = String(hashValue || '').replace(/^#/, '');
+  if (!hash.startsWith('source/')) return null;
+  return sourceIdFromSlug(hash.slice('source/'.length));
 }
 
 function projectByName(name) {
@@ -629,6 +678,20 @@ function entriesForSearch() {
   return [...seen.values()];
 }
 
+function allSources() {
+  return state?.sources?.all || [];
+}
+
+function sourceById(id) {
+  return allSources()
+    .concat(state?.sources?.archived || [])
+    .find((source) => source.id === id) || null;
+}
+
+function sourcesForGroup(group) {
+  return [...(state?.sources?.[group] || [])];
+}
+
 function filterEntries(entries, viewId = currentView) {
   let filtered = entries;
   if (['next', 'review'].includes(viewId) && areaFilter !== 'all') {
@@ -685,6 +748,12 @@ function matchesSearch(entry) {
   const haystack = [
     entry.todo,
     entry.title,
+    entry.url,
+    entry.author,
+    entry.status,
+    entry.type,
+    entry.summary,
+    entry.rawText,
     entry.section,
     entry.area,
     entry.effort,
@@ -695,6 +764,7 @@ function matchesSearch(entry) {
     entry.scheduled,
     entry.closed,
     ...(entry.tags || []),
+    ...(entry.topics || []),
     ...(entry.outlinePath || []),
   ].filter(Boolean).join(' ').toLowerCase();
   return haystack.includes(query);
@@ -726,6 +796,7 @@ function setCounts() {
     parttime: active.filter((entry) => entry.area === 'parttime').length,
     learn: active.filter((entry) => entry.area === 'learn').length,
     other: active.filter((entry) => entry.area === 'other').length,
+    ...(state.sources?.counts || {}),
   };
   for (const [name, value] of Object.entries(counts)) {
     const node = document.querySelector(`[data-count="${name}"]`);
@@ -825,6 +896,11 @@ function areaChipsHtml() {
 }
 
 function renderChips() {
+  if (currentView === 'source' || VIEWS[currentView]?.sourceGroup) {
+    els.chips.hidden = true;
+    els.chips.innerHTML = '';
+    return;
+  }
   const plannerToggle = currentView === 'today'
     ? `<button class="chip ${todayPlannerMode ? 'active' : ''}" type="button" data-planner-mode="today">Plan Today</button>`
     : '';
@@ -1586,7 +1662,106 @@ function renderProjectsView(entries) {
   `).join('');
 }
 
+function sourceImportForm() {
+  return `
+    <form class="source-import" data-source-import>
+      <input name="url" type="url" autocomplete="off" placeholder="Paste article, Twitter, YouTube, PDF, GitHub, or doc URL">
+      <select name="type" aria-label="Source type">
+        <option value="">Auto</option>
+        <option value="twitter">Twitter</option>
+        <option value="article">Article</option>
+        <option value="youtube">Video</option>
+        <option value="pdf">PDF</option>
+        <option value="github">GitHub</option>
+        <option value="doc">Doc</option>
+        <option value="other">Other</option>
+      </select>
+      <button type="submit">Import</button>
+      <p data-source-import-status hidden></p>
+    </form>
+  `;
+}
+
+function sourceTopics(source) {
+  const topics = source.topics || [];
+  if (!topics.length) return '';
+  return `<div class="source-topics">${topics.map((topic) => `<span>${esc(topic)}</span>`).join('')}</div>`;
+}
+
+function sourceCard(source) {
+  const type = SOURCE_TYPE_LABELS[source.type] || 'Source';
+  const status = SOURCE_STATUS_LABELS[source.status] || source.status;
+  return `
+    <article class="source-card" data-source-id="${esc(source.id)}" data-source-title="${esc(source.title)}">
+      <div class="source-card-head">
+        <a href="#source/${sourceSlug(source.id)}" data-source-open="${esc(source.id)}">
+          <span class="source-type">${esc(type)}</span>
+          <strong>${esc(source.title)}</strong>
+        </a>
+        <span class="source-status">${esc(status)}</span>
+      </div>
+      <a class="source-url" href="${esc(source.url)}" target="_blank" rel="noopener">${esc(source.url)}</a>
+      ${source.summary ? `<p class="source-summary">${htmlLines(source.summary.slice(0, 420))}</p>` : ''}
+      ${sourceTopics(source)}
+      <div class="source-actions">
+        <button type="button" data-source-status="reading" data-id="${esc(source.id)}">Reading</button>
+        <button type="button" data-source-status="processed" data-id="${esc(source.id)}">Processed</button>
+        <button type="button" data-source-task data-id="${esc(source.id)}">Create GTD Task</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderSources(sources, view) {
+  const body = sources.length
+    ? `<div class="source-list">${sources.map(sourceCard).join('')}</div>`
+    : emptyCard(view.empty);
+  return `${sourceImportForm()}${body}`;
+}
+
+function renderSourceDetail(source) {
+  if (!source) return emptyCard('Source not found');
+  const type = SOURCE_TYPE_LABELS[source.type] || 'Source';
+  const status = SOURCE_STATUS_LABELS[source.status] || source.status;
+  const related = (source.taskIds || []).length
+    ? `<p class="source-related">${source.taskIds.length} linked GTD task${source.taskIds.length === 1 ? '' : 's'}</p>`
+    : '';
+  return `
+    <article class="source-detail" data-source-id="${esc(source.id)}">
+      <div class="source-detail-bar">
+        <span class="source-type">${esc(type)}</span>
+        <span class="source-status">${esc(status)}</span>
+        ${source.author ? `<span>${esc(source.author)}</span>` : ''}
+        ${source.fetched ? `<span>Fetched ${esc(source.fetched)}</span>` : ''}
+      </div>
+      <a class="source-url" href="${esc(source.url)}" target="_blank" rel="noopener">${esc(source.url)}</a>
+      ${source.summary ? `<section><h2>Summary</h2><p>${htmlLines(source.summary)}</p></section>` : ''}
+      ${sourceTopics(source)}
+      ${related}
+      <div class="source-actions">
+        <button type="button" data-source-status="unread" data-id="${esc(source.id)}">Unread</button>
+        <button type="button" data-source-status="reading" data-id="${esc(source.id)}">Reading</button>
+        <button type="button" data-source-status="processed" data-id="${esc(source.id)}">Processed</button>
+        <button type="button" data-source-task data-id="${esc(source.id)}">Create GTD Task</button>
+        <button type="button" data-source-status="archived" data-id="${esc(source.id)}">Archive</button>
+      </div>
+      ${source.rawText ? `
+        <details class="source-raw">
+          <summary>Fetched Content</summary>
+          <pre>${esc(source.rawText)}</pre>
+        </details>
+      ` : ''}
+    </article>
+  `;
+}
+
 function renderItems(entries, view) {
+  if (currentView === 'source') {
+    return renderSourceDetail(sourceById(currentSourceId));
+  }
+  if (view.sourceGroup) {
+    return renderSources(entries, view);
+  }
   if (currentView === 'context') {
     return renderGrouped(entries, (entry) => listBucket(entry, view.title), [view.title, 'Done']);
   }
@@ -1634,8 +1809,15 @@ function render() {
   if (!state) return;
   const projectName = currentView === 'project' ? effectiveProjectName() : '';
   if (currentView === 'project') currentProject = projectName;
+  const activeSource = currentView === 'source' ? sourceById(currentSourceId) : null;
   const view = currentView === 'project'
     ? { title: projectName || 'Project', subtitle: 'Project', empty: 'Project has no actions' }
+    : currentView === 'source'
+      ? {
+        title: activeSource?.title || 'Source',
+        subtitle: activeSource ? `${SOURCE_TYPE_LABELS[activeSource.type] || 'Source'} · ${SOURCE_STATUS_LABELS[activeSource.status] || activeSource.status}` : 'Source',
+        empty: 'Source not found',
+      }
     : currentView === 'context'
       ? { title: contextLabel(currentContext), subtitle: 'Context', empty: 'No actions in this context' }
       : (VIEWS[currentView] || VIEWS.next);
@@ -1645,6 +1827,7 @@ function render() {
   els.subtitle.textContent = view.subtitle;
   els.areaSelect.value = view.area || 'other';
   document.body.classList.toggle('project-mode', currentView === 'project');
+  document.body.classList.toggle('source-mode', currentView === 'source' || Boolean(view.sourceGroup));
   renderChips();
   renderProjectSummary(projectName, currentView === 'project' ? entriesForProject(projectName) : []);
   renderProjects();
@@ -1656,6 +1839,10 @@ function render() {
     link.classList.toggle('active', currentView === 'project' && link.dataset.projectLink === projectName);
   });
   if (!entries.length && !['review', 'projects'].includes(currentView)) {
+    if (view.sourceGroup) {
+      els.content.innerHTML = `${sourceImportForm()}${query ? searchEmptyCard(query) : emptyCard(view.empty)}`;
+      return;
+    }
     if (creatingTask) {
       els.content.innerHTML = newTaskForm();
       return;
@@ -1669,13 +1856,19 @@ function render() {
 function setView(view, replace = false, options = {}) {
   const projectName = projectFromHash(view);
   const contextName = contextFromHash(view);
+  const sourceId = sourceFromHash(view);
   currentContext = 'all';
+  currentSourceId = '';
   if (projectName !== null) {
     currentView = 'project';
     currentProject = projectByName(projectName)?.name || firstProjectName() || projectName;
   } else if (contextName !== null) {
     currentView = 'context';
     currentContext = contextName;
+    currentProject = '';
+  } else if (sourceId !== null) {
+    currentView = 'source';
+    currentSourceId = sourceId;
     currentProject = '';
   } else {
     currentView = VIEWS[view] ? view : 'next';
@@ -1687,7 +1880,9 @@ function setView(view, replace = false, options = {}) {
     ? `#project/${projectSlug(effectiveProjectName())}`
     : currentView === 'context'
       ? `#context/${contextSlug(currentContext)}`
-      : `#${currentView}`;
+      : currentView === 'source'
+        ? `#source/${sourceSlug(currentSourceId)}`
+        : `#${currentView}`;
   if (replace) history.replaceState(null, '', hash);
   else history.pushState(null, '', hash);
   render();
@@ -2266,6 +2461,41 @@ els.form.addEventListener('submit', async (event) => {
   }
 });
 
+els.content.addEventListener('submit', async (event) => {
+  const form = event.target.closest('[data-source-import]');
+  if (!form) return;
+  event.preventDefault();
+  const data = new FormData(form);
+  const url = String(data.get('url') || '').trim();
+  if (!url) return;
+  const status = form.querySelector('[data-source-import-status]');
+  if (status) {
+    status.hidden = false;
+    status.textContent = 'Importing';
+    status.className = '';
+  }
+  try {
+    const response = await fetch('/api/sources', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        url,
+        type: data.get('type') || undefined,
+      }),
+    });
+    const body = await response.json();
+    if (!response.ok || body.ok === false) throw new Error(body.error || 'Import failed');
+    form.reset();
+    await load({ preserveViewState: true, silent: true });
+    setView(`source/${sourceSlug(body.id)}`);
+  } catch (error) {
+    if (status) {
+      status.textContent = error.message;
+      status.className = 'error';
+    }
+  }
+});
+
 els.content.addEventListener('click', async (event) => {
   const newMenuChoice = event.target.closest('[data-new-menu-value]');
   if (newMenuChoice) {
@@ -2285,6 +2515,44 @@ els.content.addEventListener('click', async (event) => {
     els.search.value = '';
     render();
     els.search.focus();
+    return;
+  }
+  const sourceOpen = event.target.closest('[data-source-open]');
+  if (sourceOpen) {
+    event.preventDefault();
+    setView(`source/${sourceSlug(sourceOpen.dataset.sourceOpen)}`);
+    return;
+  }
+  const sourceStatus = event.target.closest('[data-source-status]');
+  if (sourceStatus) {
+    event.preventDefault();
+    event.stopPropagation();
+    sourceStatus.disabled = true;
+    try {
+      await mutate(`/api/sources/${sourceStatus.dataset.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: sourceStatus.dataset.sourceStatus }),
+      });
+      await load({ preserveViewState: true, silent: true });
+    } catch (error) {
+      els.content.innerHTML = `<div class="empty-card"><h2>Source update failed</h2><p>${esc(error.message)}</p></div>`;
+    }
+    return;
+  }
+  const sourceTask = event.target.closest('[data-source-task]');
+  if (sourceTask) {
+    event.preventDefault();
+    event.stopPropagation();
+    sourceTask.disabled = true;
+    try {
+      await mutate(`/api/sources/${sourceTask.dataset.id}/tasks`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      await load({ preserveViewState: true, silent: true });
+    } catch (error) {
+      els.content.innerHTML = `<div class="empty-card"><h2>Task creation failed</h2><p>${esc(error.message)}</p></div>`;
+    }
     return;
   }
   const button = event.target.closest('[data-action]');
