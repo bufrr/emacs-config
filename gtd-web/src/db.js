@@ -8,7 +8,7 @@ import { expandHome, readEntries, slugTitle } from './org.js';
 const DONE_STATES = new Set(['DONE', 'CANCELLED']);
 const OPEN_STATES = new Set(['TODO', 'NEXT', 'PROJ', 'WAIT']);
 const TODO_STATES = new Set(['TODO', 'NEXT', 'PROJ', 'WAIT', 'DONE', 'CANCELLED']);
-const LISTS = new Set(['inbox', 'next', 'later', 'scheduled', 'someday', 'waiting']);
+const LISTS = new Set(['inbox', 'next', 'later', 'twitter', 'scheduled', 'someday', 'waiting']);
 const REPEATS = new Set(['', 'daily', 'weekly', 'monthly']);
 const AREA_SECTIONS = new Map([
   ['work', 'Work'],
@@ -361,6 +361,7 @@ function buildGroups(entries, config) {
     next: sortEntries(open.filter((entry) => entry.list === 'next' || (entry.list === 'scheduled' && isDueForNext(entry, now)))),
     actions: [],
     later: sortEntries(open.filter((entry) => entry.list === 'later')),
+    twitter: sortEntries(open.filter((entry) => entry.list === 'twitter')),
     stale: sortEntries(open.filter((entry) =>
       ['inbox', 'next'].includes(entry.list)
         && entry.createdTime
@@ -398,6 +399,7 @@ function buildGroups(entries, config) {
     next: groups.next.length,
     actions: groups.actions.length,
     later: groups.later.length,
+    twitter: groups.twitter.length,
     stale: groups.stale.length,
     scheduled: groups.scheduled.length,
     someday: groups.someday.length,

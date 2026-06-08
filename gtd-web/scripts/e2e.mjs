@@ -388,6 +388,7 @@ async function runBrowserSuite(baseUrl) {
   const doneUndo = slugTitle(`E2E ${suffix} done undo`);
   const routine = slugTitle(`E2E ${suffix} routine`);
   const planner = slugTitle(`E2E ${suffix} planner`);
+  const twitterRead = slugTitle(`E2E ${suffix} twitter read`);
   const project = slugTitle(`E2E ${suffix} project`);
   const projectCopy = `${project} Copy`;
 
@@ -431,6 +432,7 @@ async function runBrowserSuite(baseUrl) {
     await quickAdd(page, doneUndo);
     await quickAdd(page, routine);
     await quickAdd(page, planner);
+    await quickAdd(page, twitterRead);
     await quickAdd(page, project);
 
     log('E2E: area chips');
@@ -567,6 +569,14 @@ async function runBrowserSuite(baseUrl) {
     await clickNav(page, 'forecast');
     await waitForTask(page, planner);
     assert.ok((await page.$$eval('.section-title h2', (nodes) => nodes.map((node) => node.textContent.trim()))).includes('Tomorrow'));
+    await clickNav(page, 'next');
+
+    log('E2E: Twitter reading list');
+    await clickMenu(page, twitterRead, 'SET_LIST', 'twitter');
+    await waitForNoTask(page, twitterRead);
+    await clickNav(page, 'twitter');
+    assert.equal(await page.locator('#view-title').innerText(), 'Twitter');
+    await waitForTask(page, twitterRead);
     await clickNav(page, 'next');
 
     log('E2E: scheduled move and unschedule');

@@ -7,6 +7,7 @@ const VIEWS = {
   projects: { title: 'Projects', subtitle: 'Open loops with visible next actions', group: 'projects', empty: 'No active projects' },
   review: { title: 'Review', subtitle: 'Weekly clarity check', group: 'all', empty: 'Nothing to review' },
   later: { title: 'Later', subtitle: "To-do's for later", group: 'later', empty: 'Later list is empty' },
+  twitter: { title: 'Twitter', subtitle: 'Threads and articles to read', group: 'twitter', empty: 'Twitter reading list is empty' },
   scheduled: { title: 'Scheduled', subtitle: '... for a future date', group: 'scheduled', empty: 'You have nothing Scheduled' },
   someday: { title: 'Someday', subtitle: 'Maybe', group: 'someday', empty: 'Someday list is empty' },
   waiting: { title: 'Waiting', subtitle: '... for someone / on hold', group: 'waiting', empty: 'You are not currently Waiting on anyone' },
@@ -18,12 +19,13 @@ const VIEWS = {
   trash: { title: 'Trash', subtitle: '... to be deleted', group: 'trash', empty: 'Trash is empty.' },
 };
 
-const VIEW_ORDER = ['inbox', 'focus', 'today', 'forecast', 'next', 'later', 'scheduled', 'someday', 'waiting', 'projects', 'review', 'work', 'parttime', 'learn', 'other', 'logbook', 'trash'];
+const VIEW_ORDER = ['inbox', 'focus', 'today', 'forecast', 'next', 'later', 'twitter', 'scheduled', 'someday', 'waiting', 'projects', 'review', 'work', 'parttime', 'learn', 'other', 'logbook', 'trash'];
 
 const LIST_LABELS = {
   inbox: 'Inbox',
   next: 'Next',
   later: 'Later',
+  twitter: 'Twitter',
   scheduled: 'Scheduled',
   someday: 'Someday',
   waiting: 'Waiting',
@@ -415,7 +417,7 @@ function entriesForView(viewId) {
   if (viewId === 'next') {
     return filterEntries(sortByProject(entries.filter((entry) => entry.isCurrent && !entry.trashed && entryBelongsToListView(entry, viewId))), viewId);
   }
-  if (['inbox', 'later', 'scheduled', 'someday', 'waiting'].includes(viewId)) {
+  if (['inbox', 'later', 'twitter', 'scheduled', 'someday', 'waiting'].includes(viewId)) {
     return filterEntries(entries.filter((entry) => entry.isCurrent && !entry.trashed && entryBelongsToListView(entry, viewId)), viewId);
   }
   const list = state.groups[view.group] || [];
@@ -628,7 +630,7 @@ function resetViewState() {
 }
 
 function listForCurrentView() {
-  if (['inbox', 'next', 'later', 'scheduled', 'someday', 'waiting'].includes(currentView)) return currentView;
+  if (['inbox', 'next', 'later', 'twitter', 'scheduled', 'someday', 'waiting'].includes(currentView)) return currentView;
   if (currentView === 'project') return 'next';
   if (currentView === 'focus') return 'next';
   return 'next';
@@ -680,6 +682,7 @@ function setCounts() {
     projects: projectRows().length,
     review: entriesForReview().length,
     later: active.filter((entry) => entry.list === 'later').length,
+    twitter: active.filter((entry) => entry.list === 'twitter').length,
     stale: active.filter(isStaleOpen).length,
     scheduled: active.filter((entry) => entryBelongsToListView(entry, 'scheduled')).length,
     someday: active.filter((entry) => entry.list === 'someday').length,
@@ -910,6 +913,7 @@ function areaBucket(entry) {
   if (entry.list === 'waiting' || entry.todo === 'WAIT') return 'Waiting';
   if (entry.list === 'someday') return 'Someday';
   if (entry.list === 'later') return 'Later';
+  if (entry.list === 'twitter') return 'Twitter';
   if (entry.list === 'inbox') return 'Inbox';
   return 'Next Up';
 }
@@ -1263,12 +1267,7 @@ function taskMenu(entry) {
   ].join('');
   const listItems = [
     '<span class="menu-label">State</span>',
-    textItem('SET_LIST', entry.list === 'inbox' ? '• Inbox' : 'Inbox', 'inbox'),
-    textItem('SET_LIST', entry.list === 'next' ? '• Next' : 'Next', 'next'),
-    textItem('SET_LIST', entry.list === 'later' ? '• Later' : 'Later', 'later'),
-    textItem('SET_LIST', entry.list === 'waiting' ? '• Waiting' : 'Waiting', 'waiting'),
-    textItem('SET_LIST', entry.list === 'scheduled' ? '• Scheduled' : 'Scheduled', 'scheduled'),
-    textItem('SET_LIST', entry.list === 'someday' ? '• Someday' : 'Someday', 'someday'),
+    ...Object.entries(LIST_LABELS).map(([value, label]) => textItem('SET_LIST', entry.list === value ? `• ${label}` : label, value)),
   ].join('');
   const projectItems = (state.groups.projects || [])
     .map((project) => textItem('SET_PROJECT', entry.project === project.name ? `• ${project.name}` : project.name, project.name))
@@ -1399,6 +1398,7 @@ function projectBucket(entry) {
   if (isDoneEntry(entry)) return 'Done';
   if (entry.list === 'someday') return 'Someday';
   if (entry.list === 'later') return 'Later';
+  if (entry.list === 'twitter') return 'Twitter';
   if (entry.list === 'scheduled') return 'Scheduled';
   if (entry.list === 'waiting' || entry.todo === 'WAIT') return 'Waiting';
   if (entry.list === 'inbox') return 'Inbox';

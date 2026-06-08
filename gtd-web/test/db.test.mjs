@@ -62,9 +62,14 @@ test('SQLite store owns UI create and status updates', async () => {
 
   const store = await createGtdStore({ currentFile, archiveFile, dbFile, now: new Date(2026, 5, 7) });
   const created = store.addTask({ title: 'write db migration', area: 'work' });
+  const twitter = store.addTask({ title: 'read x article', area: 'learn', list: 'twitter', tags: ['reading', 'twitter'] });
   assert.equal(created.title, 'Write Db Migration');
   let state = store.readState();
   assert.equal(state.groups.actions.some((entry) => entry.title === 'Write Db Migration'), true);
+  const twitterEntry = state.groups.twitter.find((entry) => entry.id === twitter.id);
+  assert.equal(twitterEntry.title, 'Read X Article');
+  assert.equal(twitterEntry.list, 'twitter');
+  assert.deepEqual(twitterEntry.tags, ['reading', 'twitter']);
 
   store.updateTaskState(created.id, 'DONE');
   state = store.readState();
