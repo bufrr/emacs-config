@@ -54,6 +54,12 @@ const ENERGY_LABELS = {
   medium: '•• med',
   high: '••• high',
 };
+const REPEAT_LABELS = {
+  '': 'none',
+  daily: 'daily',
+  weekly: 'weekly',
+  monthly: 'monthly',
+};
 const DEFAULT_CONTEXT_TAGS = ['AI', 'blockchain', 'Errand', 'gateway', 'Home', 'Important', 'Pending', 'work', 'Work'];
 const DONE_TODOS = new Set(['DONE', 'CANCELLED']);
 const ACTIVE_STALE_DAYS = 14;
@@ -213,6 +219,7 @@ function localTaskPatchFromBody(body, entry = {}) {
   }
   if (Object.hasOwn(body, 'energy')) patch.energy = body.energy || '';
   if (Object.hasOwn(body, 'project')) patch.project = body.project || '';
+  if (Object.hasOwn(body, 'repeat')) patch.repeat = body.repeat || '';
   if (Object.hasOwn(body, 'notes')) patch.notes = body.notes || '';
   if (Object.hasOwn(body, 'tags')) patch.tags = Array.isArray(body.tags) ? body.tags : [];
   if (Object.hasOwn(body, 'scheduledAt') && body.scheduledAt !== undefined) patch.scheduled = localDateOrNull(body.scheduledAt);
@@ -717,6 +724,7 @@ function meta(entry) {
     entry.due ? `<span><i class="metaicon due"></i>Due ${shortDate(entry.due)}</span>` : '',
     entry.effort ? `<span><i class="metaicon etime"></i>${esc(entry.effort)}</span>` : '',
     entry.energy ? `<span><i class="metaicon energy"></i>${esc(ENERGY_LABELS[entry.energy] || entry.energy)}</span>` : '',
+    entry.repeat ? `<span><i class="metaicon repeat"></i>${esc(repeatLabel(entry.repeat))}</span>` : '',
     displayProject ? `<span><i class="metaicon belongsto"></i>${esc(displayProject)}</span>` : '',
     entry.closed ? `<span>Closed ${esc(entry.closed)}</span>` : '',
   ].filter(Boolean);
@@ -784,6 +792,11 @@ function focusStar(entry) {
   return `<button class="star ${entry.focus ? 'active' : ''}" type="button" data-action="FOCUS" data-focus="${entry.focus ? '0' : '1'}" data-id="${entry.id}" aria-label="${label}"></button>`;
 }
 
+function repeatLabel(value, fallback = 'repeat') {
+  if (!value) return fallback;
+  return REPEAT_LABELS[value] || value;
+}
+
 function option(value, label, selected) {
   return `<option value="${value}" ${selected === value ? 'selected' : ''}>${esc(label)}</option>`;
 }
@@ -828,6 +841,7 @@ function editorSideFields({
   list = 'next',
   area = 'other',
   project = '',
+  repeat = '',
   includeArea = true,
   includeScheduled = false,
   customMenus = false,
@@ -848,6 +862,9 @@ function editorSideFields({
       <label class="side-field side-list"><span>list</span><select${nativeClass} name="list">
         ${Object.entries(LIST_LABELS).map(([value, label]) => option(value, label, list)).join('')}
       </select>${newMenuControl('list', LIST_LABELS[list] || list)}</label>
+      <label class="side-field side-repeat"><span>repeat</span><select${nativeClass} name="repeat">
+        ${Object.entries(REPEAT_LABELS).map(([value, label]) => option(value, label, repeat)).join('')}
+      </select>${newMenuControl('repeat', repeatLabel(repeat))}</label>
       ${includeScheduled ? `<label><span>scheduled</span><input name="scheduledAt" type="date" value="${esc(scheduled)}"></label>` : ''}
       ${includeArea ? `<label class="side-field side-area"><span>area</span><select name="area">
         ${Object.entries(AREA_LABELS).map(([value, label]) => option(value, label, area)).join('')}
@@ -868,6 +885,7 @@ function taskBodyFromFormData(data, { includeScheduled = false } = {}) {
     dueAt: data.get('dueAt'),
     energy: data.get('energy'),
     project: data.get('project'),
+    repeat: data.get('repeat'),
     tags: parseTags(data.get('tags')),
     notes: data.get('notes'),
   };
@@ -898,6 +916,9 @@ function newTaskMenuChoices(field) {
   }
   if (field === 'list') {
     return Object.entries(LIST_LABELS).map(([value, label]) => ({ value, label }));
+  }
+  if (field === 'repeat') {
+    return Object.entries(REPEAT_LABELS).map(([value, label]) => ({ value, label, emptyLabel: 'repeat' }));
   }
   if (field === 'project') {
     const projects = (state?.groups?.projects || []).map((project) => project.name).filter(Boolean);
@@ -1007,6 +1028,7 @@ function editTask(entry) {
         list: entry.list || 'next',
         area: entry.area || 'other',
         project: entry.project || '',
+        repeat: entry.repeat || '',
         includeScheduled: true,
       })}
     </form>
@@ -1069,6 +1091,13 @@ function taskMenu(entry) {
     ...ENERGY_OPTIONS.filter(Boolean).map((value) => textItem('SET_ENERGY', ENERGY_LABELS[value] || value, value)),
     textItem('SET_ENERGY', 'None', ''),
   ].join('');
+  const repeatItems = [
+    '<span class="menu-label">Repeat</span>',
+    textItem('SET_REPEAT', entry.repeat === 'daily' ? '• Daily' : 'Daily', 'daily'),
+    textItem('SET_REPEAT', entry.repeat === 'weekly' ? '• Weekly' : 'Weekly', 'weekly'),
+    textItem('SET_REPEAT', entry.repeat === 'monthly' ? '• Monthly' : 'Monthly', 'monthly'),
+    textItem('SET_REPEAT', entry.repeat ? 'None' : '• None', ''),
+  ].join('');
   return `
     <div class="task-menu" role="menu">
       <span class="menu-title">${esc(entry.title)}</span>
@@ -1077,6 +1106,7 @@ function taskMenu(entry) {
       ${submenu('Contexts', contextItems)}
       ${submenu('Time', timeItems)}
       ${submenu('Energy', energyItems)}
+      ${submenu('Repeat', repeatItems)}
       ${submenu('Due', `${textItem('SET_DUE', 'Today', relativeDate(0))}${textItem('SET_DUE', 'Tomorrow', relativeDate(1))}${textItem('SET_DUE', 'Next Week', nextWeekDate())}${textItem('SET_DUE', 'Remove Date', '')}`)}
       ${submenu('Schedule', `${textItem('SET_SCHEDULE', 'Tomorrow', relativeDate(1))}${textItem('SET_SCHEDULE', 'Next Week', nextWeekDate())}${entry.scheduled ? textItem('SET_SCHEDULE', 'Remove Start Date', '') : ''}`)}
       ${submenu('Move', moveItems)}
@@ -1979,9 +2009,8 @@ els.content.addEventListener('click', async (event) => {
     window.location.href = `mailto:?subject=${subject}&body=${body}`;
     return;
   }
-  if (action === 'REPEAT' || action === 'MANAGE_AREAS' || action === 'MANAGE_CONTEXTS') {
+  if (action === 'MANAGE_AREAS' || action === 'MANAGE_CONTEXTS') {
     const messages = {
-      REPEAT: 'Repeating tasks are not modeled yet. Use Schedule Start Date for now.',
       MANAGE_AREAS: 'Areas are Work, Part-Time, Learning, and Other in this GTD setup.',
       MANAGE_CONTEXTS: 'Contexts are represented as tags for now.',
     };
@@ -2014,6 +2043,8 @@ els.content.addEventListener('click', async (event) => {
       await patchTask(id, { effort: button.dataset.value });
     } else if (action === 'SET_ENERGY') {
       await patchTask(id, { energy: button.dataset.value });
+    } else if (action === 'SET_REPEAT') {
+      await patchTask(id, { repeat: button.dataset.value });
     } else if (action === 'SET_DUE') {
       await patchTask(id, { dueAt: button.dataset.value });
     } else if (action === 'SET_AREA') {

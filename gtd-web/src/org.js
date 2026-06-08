@@ -231,6 +231,7 @@ export function parseOrg(text, file) {
     entry.created = propertyValue(lines, start, nextStart, 'Created') || propertyValue(lines, start, nextStart, 'CREATED');
     entry.closed = lineTimestamp(lines, start, nextStart, 'CLOSED') || propertyValue(lines, start, nextStart, 'CLOSED');
     entry.scheduled = lineTimestamp(lines, start, nextStart, 'SCHEDULED') || propertyValue(lines, start, nextStart, 'SCHEDULED');
+    entry.repeat = propertyValue(lines, start, nextStart, 'Repeat') || propertyValue(lines, start, nextStart, 'REPEAT') || '';
     entry.createdTime = parseTimestamp(entry.created);
     entry.closedTime = parseTimestamp(entry.closed);
     entry.scheduledTime = parseTimestamp(entry.scheduled);

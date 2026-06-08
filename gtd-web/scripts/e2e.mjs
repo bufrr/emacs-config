@@ -79,6 +79,7 @@ function escapeRegex(value) {
 function menuPath(action, value) {
   if (action === 'SET_TIME') return ['Time'];
   if (action === 'SET_ENERGY') return ['Energy'];
+  if (action === 'SET_REPEAT') return ['Repeat'];
   if (action === 'SET_DUE') return ['Due'];
   if (action === 'SET_SCHEDULE') return ['Schedule'];
   if (action === 'SET_AREA') return ['Area'];
@@ -347,6 +348,7 @@ async function runBrowserSuite(baseUrl) {
   const beta = slugTitle(`E2E ${suffix} beta`);
   const gamma = slugTitle(`E2E ${suffix} gamma`);
   const doneUndo = slugTitle(`E2E ${suffix} done undo`);
+  const routine = slugTitle(`E2E ${suffix} routine`);
   const project = slugTitle(`E2E ${suffix} project`);
   const projectCopy = `${project} Copy`;
 
@@ -370,6 +372,7 @@ async function runBrowserSuite(baseUrl) {
     assert.equal(await newForm.locator('[data-action="NEW_FOCUS"]').getAttribute('data-focus'), '1');
     await chooseNewTaskMenuValue(newForm, 'effort', '30m');
     await chooseNewTaskMenuValue(newForm, 'energy', 'high');
+    await chooseNewTaskMenuValue(newForm, 'repeat', 'weekly');
     const browserToday = await page.evaluate(() => {
       const date = new Date();
       const pad = (value) => String(value).padStart(2, '0');
@@ -387,6 +390,7 @@ async function runBrowserSuite(baseUrl) {
     await quickAdd(page, beta);
     await quickAdd(page, gamma);
     await quickAdd(page, doneUndo);
+    await quickAdd(page, routine);
     await quickAdd(page, project);
 
     log('E2E: area chips');
@@ -465,6 +469,8 @@ async function runBrowserSuite(baseUrl) {
     assert.match(await (await waitForTask(page, alphaEdited)).innerText(), /10m/);
     await clickMenu(page, alphaEdited, 'SET_ENERGY', 'high');
     assert.match(await (await waitForTask(page, alphaEdited)).innerText(), /high/);
+    await clickMenu(page, alphaEdited, 'SET_REPEAT', 'weekly');
+    assert.match(await (await waitForTask(page, alphaEdited)).innerText(), /weekly/);
     const today = new Date().toISOString().slice(0, 10);
     await clickMenu(page, alphaEdited, 'SET_DUE', today);
     assert.match(await (await waitForTask(page, alphaEdited)).innerText(), /Due/);
@@ -479,6 +485,21 @@ async function runBrowserSuite(baseUrl) {
     await waitForNoTask(page, alphaEdited);
     await clickNav(page, 'next');
     await waitForTask(page, alphaEdited);
+
+    log('E2E: recurring routine rolls forward when completed');
+    await clickMenu(page, routine, 'SET_REPEAT', 'daily');
+    assert.match(await (await waitForTask(page, routine)).innerText(), /daily/);
+    const routineRow = await waitForTask(page, routine);
+    await routineRow.locator('[data-action="DONE"]').click();
+    await page.waitForFunction((title) => {
+      const row = [...document.querySelectorAll('.task[data-task-title]')]
+        .find((node) => node.dataset.taskTitle === title);
+      return row?.classList.contains('done-state');
+    }, routine, { timeout: 5_000 });
+    await clickNav(page, 'scheduled');
+    await waitForTask(page, routine);
+    assert.match(await (await waitForTask(page, routine)).innerText(), /daily/);
+    await clickNav(page, 'next');
 
     log('E2E: drag reorder');
     await dragTaskToTask(page, gamma, beta, 'before');

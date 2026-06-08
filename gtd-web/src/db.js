@@ -9,6 +9,7 @@ const DONE_STATES = new Set(['DONE', 'CANCELLED']);
 const OPEN_STATES = new Set(['TODO', 'NEXT', 'PROJ', 'WAIT']);
 const TODO_STATES = new Set(['TODO', 'NEXT', 'PROJ', 'WAIT', 'DONE', 'CANCELLED']);
 const LISTS = new Set(['inbox', 'next', 'later', 'scheduled', 'someday', 'waiting']);
+const REPEATS = new Set(['', 'daily', 'weekly', 'monthly']);
 const AREA_SECTIONS = new Map([
   ['work', 'Work'],
   ['parttime', 'Part-Time'],
@@ -59,6 +60,22 @@ function isoFromDateOnly(value) {
     return new Date(`${value}T00:00:00Z`).toISOString();
   }
   return isoFromDate(value);
+}
+
+function cleanRepeat(value) {
+  const repeat = String(value || '').trim().toLowerCase();
+  return REPEATS.has(repeat) ? repeat : '';
+}
+
+function nextRepeatDate(repeat, anchor = new Date()) {
+  const date = new Date(anchor);
+  if (Number.isNaN(date.getTime())) return null;
+  date.setUTCHours(0, 0, 0, 0);
+  if (repeat === 'daily') date.setUTCDate(date.getUTCDate() + 1);
+  else if (repeat === 'weekly') date.setUTCDate(date.getUTCDate() + 7);
+  else if (repeat === 'monthly') date.setUTCMonth(date.getUTCMonth() + 1);
+  else return null;
+  return date.toISOString();
 }
 
 function dateText(value) {
@@ -149,6 +166,7 @@ function prepareDb(file) {
       due_at TEXT,
       energy TEXT,
       project TEXT,
+      repeat TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -179,6 +197,7 @@ function prepareDb(file) {
   ensureColumn(db, 'tasks', 'due_at', 'due_at TEXT');
   ensureColumn(db, 'tasks', 'energy', 'energy TEXT');
   ensureColumn(db, 'tasks', 'project', 'project TEXT');
+  ensureColumn(db, 'tasks', 'repeat', 'repeat TEXT');
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_tasks_list ON tasks(list);
     CREATE INDEX IF NOT EXISTS idx_tasks_focus ON tasks(focus);
@@ -222,6 +241,7 @@ function rowsToEntries(rows) {
     time: row.effort,
     energy: row.energy || '',
     project: row.project || '',
+    repeat: row.repeat || '',
     sortOrder: row.sort_order,
     due: dateText(row.due_at),
     notes: row.notes || '',
@@ -416,6 +436,7 @@ function exportTree(byParent, parentId, level) {
       row.effort ? `   :Effort: ${row.effort}` : '',
       row.energy ? `   :Energy: ${row.energy}` : '',
       row.project ? `   :Project: ${row.project}` : '',
+      row.repeat ? `   :Repeat: ${row.repeat}` : '',
       row.created_at ? `   :Created: ${orgTimestamp(row.created_at)}` : '',
       row.source_file ? '   :Source: gtd-web-import' : '   :Source: gtd-web',
     ].filter(Boolean);
@@ -439,9 +460,9 @@ export async function createGtdStore(config) {
   const insertTask = db.prepare(`
     INSERT OR REPLACE INTO tasks (
       id, parent_id, title, status, list, focus, area, section, priority, effort,
-      notes, tags_json, due_at, energy, project, sort_order, created_at, updated_at,
+      notes, tags_json, due_at, energy, project, repeat, sort_order, created_at, updated_at,
       scheduled_at, closed_at, archived, trashed_at, source_file, source_line
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertEvent = db.prepare('INSERT INTO events(id, task_id, type, payload_json, created_at) VALUES(?, ?, ?, ?, ?)');
 
@@ -495,6 +516,7 @@ export async function createGtdStore(config) {
           null,
           null,
           null,
+          cleanRepeat(entry.repeat),
           index * 1024,
           isoFromDate(entry.createdTime) || importedAt,
           importedAt,
@@ -552,6 +574,7 @@ export async function createGtdStore(config) {
       const scheduledAt = Object.hasOwn(input, 'scheduledAt')
         ? (input.scheduledAt ? isoFromDateOnly(input.scheduledAt) : null)
         : (list === 'scheduled' ? tomorrowIso() : null);
+      const repeat = cleanRepeat(input.repeat);
       const created = nowIso();
       const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS value FROM tasks WHERE archived = 0 AND trashed_at IS NULL').get().value;
       const id = randomUUID();
@@ -571,6 +594,7 @@ export async function createGtdStore(config) {
         input.dueAt ? isoFromDateOnly(input.dueAt) : null,
         input.energy || null,
         input.project || null,
+        repeat,
         maxOrder + 1024,
         created,
         created,
@@ -581,8 +605,46 @@ export async function createGtdStore(config) {
         null,
         null,
       );
-      logEvent(id, 'task_created', { title, area, section, list });
+      logEvent(id, 'task_created', { title, area, section, list, repeat });
       return { ok: true, id, title };
+    },
+
+    createNextRepeatTask(task, closedAt = nowIso()) {
+      const repeat = cleanRepeat(task.repeat);
+      const nextAt = nextRepeatDate(repeat, task.scheduled_at || task.due_at || closedAt);
+      if (!repeat || !nextAt) return null;
+      const created = nowIso();
+      const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS value FROM tasks WHERE archived = 0 AND trashed_at IS NULL').get().value;
+      const nextId = randomUUID();
+      insertTask.run(
+        nextId,
+        task.parent_id || null,
+        task.title,
+        'TODO',
+        'scheduled',
+        0,
+        task.area || 'other',
+        task.section || sectionForArea(task.area),
+        task.priority || null,
+        task.effort || null,
+        task.notes || null,
+        task.tags_json || '[]',
+        task.due_at ? nextAt : null,
+        task.energy || null,
+        task.project || null,
+        repeat,
+        maxOrder + 1024,
+        created,
+        created,
+        nextAt,
+        null,
+        0,
+        null,
+        null,
+        null,
+      );
+      logEvent(nextId, 'task_repeated', { from: task.id, title: task.title, repeat, scheduledAt: nextAt });
+      return { id: nextId, title: task.title, scheduledAt: dateText(nextAt), repeat };
     },
 
     updateTaskState(id, todo) {
@@ -592,8 +654,9 @@ export async function createGtdStore(config) {
       const closedAt = DONE_STATES.has(todo) ? nowIso() : null;
       const list = todo === 'WAIT' ? 'waiting' : (todo === 'NEXT' ? 'next' : task.list);
       db.prepare('UPDATE tasks SET status = ?, list = ?, closed_at = ?, updated_at = ? WHERE id = ?').run(todo, list, closedAt, nowIso(), id);
+      const nextRepeat = DONE_STATES.has(todo) ? this.createNextRepeatTask(task, closedAt) : null;
       logEvent(id, 'task_status_changed', { from: task.status, to: todo });
-      return { ok: true, id, title: task.title, todo };
+      return { ok: true, id, title: task.title, todo, nextRepeat };
     },
 
     updateTask(id, input) {
@@ -614,6 +677,7 @@ export async function createGtdStore(config) {
         ? (input.dueAt ? isoFromDateOnly(input.dueAt) : null)
         : task.due_at;
       const tags = Object.hasOwn(input, 'tags') ? toJson(input.tags || []) : task.tags_json;
+      const repeat = Object.hasOwn(input, 'repeat') ? cleanRepeat(input.repeat) : cleanRepeat(task.repeat);
       const closedAt = DONE_STATES.has(status)
         ? (task.closed_at || nowIso())
         : null;
@@ -621,7 +685,7 @@ export async function createGtdStore(config) {
         UPDATE tasks
         SET title = ?, status = ?, list = ?, focus = ?, area = ?, section = ?,
             effort = ?, notes = ?, tags_json = ?, scheduled_at = ?, due_at = ?,
-            energy = ?, project = ?, closed_at = ?, updated_at = ?
+            energy = ?, project = ?, repeat = ?, closed_at = ?, updated_at = ?
         WHERE id = ?
       `).run(
         title,
@@ -637,11 +701,12 @@ export async function createGtdStore(config) {
         dueAt,
         input.energy === undefined ? task.energy : input.energy || null,
         input.project === undefined ? task.project : input.project || null,
+        repeat,
         closedAt,
         nowIso(),
         id,
       );
-      logEvent(id, 'task_updated', { title, status, list, focus: Boolean(focus), area, section });
+      logEvent(id, 'task_updated', { title, status, list, focus: Boolean(focus), area, section, repeat });
       return { ok: true, id, title, todo: status };
     },
 
@@ -679,9 +744,11 @@ export async function createGtdStore(config) {
     moveToLogbook(id) {
       const task = getTask(id);
       if (!task) throw new Error('Task not found');
-      db.prepare('UPDATE tasks SET status = ?, closed_at = ?, updated_at = ? WHERE id = ?').run('DONE', nowIso(), nowIso(), id);
+      const closedAt = nowIso();
+      db.prepare('UPDATE tasks SET status = ?, closed_at = ?, updated_at = ? WHERE id = ?').run('DONE', closedAt, closedAt, id);
+      const nextRepeat = this.createNextRepeatTask(task, closedAt);
       logEvent(id, 'task_moved_to_logbook', { title: task.title });
-      return { ok: true, id, title: task.title };
+      return { ok: true, id, title: task.title, nextRepeat };
     },
 
     convertToProject(id) {
@@ -714,6 +781,7 @@ export async function createGtdStore(config) {
         task.due_at || null,
         task.energy || null,
         task.project || null,
+        task.repeat || '',
         maxOrder + 1024,
         created,
         created,

@@ -1565,6 +1565,11 @@ button.check:hover {
   content: "\e822";
 }
 
+.metaicon.repeat::after {
+  content: "\21bb";
+  font-family: inherit;
+}
+
 .metaicon.belongsto::after {
   content: "\e801";
 }

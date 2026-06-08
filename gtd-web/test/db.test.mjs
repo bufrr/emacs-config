@@ -175,3 +175,31 @@ test('SQLite store persists manual row ordering', async () => {
   assert.deepEqual(reordered.map((entry) => entry.id), [second.id, first.id]);
   store.close();
 });
+
+test('SQLite store rolls recurring tasks forward when completed', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'gtd-db-'));
+  const currentFile = path.join(dir, 'current.org');
+  const archiveFile = path.join(dir, 'archive.org');
+  const dbFile = path.join(dir, 'gtd.sqlite');
+  await writeFile(currentFile, '* Work\n', 'utf8');
+  await writeFile(archiveFile, '', 'utf8');
+
+  const store = await createGtdStore({ currentFile, archiveFile, dbFile, now: new Date(2026, 5, 7) });
+  const created = store.addTask({
+    title: 'weekly planning',
+    area: 'work',
+    list: 'scheduled',
+    scheduledAt: '2026-06-08',
+    repeat: 'weekly',
+  });
+  const result = store.updateTaskState(created.id, 'DONE');
+  assert.equal(result.nextRepeat.scheduledAt, '2026-06-15');
+
+  const state = store.readState();
+  assert.equal(state.groups.completed.some((entry) => entry.id === created.id), true);
+  const next = state.groups.scheduled.find((entry) => entry.title === 'Weekly Planning' && entry.id !== created.id);
+  assert.equal(next.scheduled, '2026-06-15');
+  assert.equal(next.repeat, 'weekly');
+  assert.match(store.exportOrgText(), /:Repeat: weekly/);
+  store.close();
+});
