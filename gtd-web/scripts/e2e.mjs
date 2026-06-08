@@ -556,6 +556,12 @@ async function runBrowserSuite(baseUrl) {
     await dragTaskToForecastSection(page, planner, 'Today');
     await clickNav(page, 'today');
     await waitForTask(page, planner);
+    await clickPlannerAction(page, planner, 'no-date');
+    await clickNav(page, 'focus');
+    await waitForTask(page, planner);
+    await assertFocusStar(page, planner, true);
+    await clickNav(page, 'next');
+    await waitForTask(page, planner);
     await clickPlannerAction(page, planner, 'tomorrow');
     await waitForNoTask(page, planner);
     await clickNav(page, 'forecast');

@@ -358,7 +358,6 @@ function plannerPatch(entry, plan) {
     return {
       scheduledAt: '',
       dueAt: '',
-      focus: false,
       list: entry?.list === 'scheduled' ? 'next' : entry?.list || 'next',
       todo: todoForPlannedEntry(entry),
     };
