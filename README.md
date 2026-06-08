@@ -32,8 +32,8 @@ This is my personal Doom Emacs configuration with a focus on GTD (Getting Things
 | `SPC g w` | Open current work file |
 | `SPC g v` | View archive |
 | `SPC g G` | Open GTD dashboard |
-| `SPC g h` | Open the JavaScript GTD web app |
-| `SPC g q` | Stop the JavaScript GTD web app |
+| `SPC g h` | Open AgentDeck |
+| `SPC g q` | Stop AgentDeck |
 | `SPC g t` | Add and classify raw task |
 | `SPC g d` | Add deep work task |
 | `SPC g s` | Add shallow task |
@@ -55,7 +55,6 @@ This is my personal Doom Emacs configuration with a focus on GTD (Getting Things
 - `config.el` - Main configuration file
 - `init.el` - Doom modules declaration
 - `packages.el` - Additional package declarations
-- `gtd-web/` - Local JavaScript GTD cockpit over the org files
 - `CLAUDE.md` - AI assistant instructions for this codebase
 
 ## File Organization
@@ -114,19 +113,24 @@ Feel free to modify the configuration to suit your needs. Key areas:
 2. **Work**: `SPC g w` to view current work file
 3. **Assistant intake**: `SPC g t` adds and classifies a raw task phrase
 4. **Complete**: Mark items DONE with `C-c C-t d` or `SPC g x`
-5. **Daily UI**: `SPC g h` opens the JavaScript GTD app for Next, Inbox, Waiting, Scheduled, Someday, and area views
+5. **Daily UI**: `SPC g h` opens AgentDeck for Next, Inbox, Waiting, Scheduled, Someday, and source views
 6. **Review**: `SPC g G` for the GTD dashboard, `SPC g a` for agenda, or `SPC g v` for archive
 7. **Archive**: `SPC g A` archives the current subtree; `SPC g X` archives completed GTD entries after confirmation
 
-### JavaScript GTD App
+### AgentDeck
 
-The web app keeps `~/org/gtd/current.org` and `~/org/gtd/archive.org` as the source of truth.
-It reads org directly and creates a timestamped backup before mutating `current.org`.
+AgentDeck now lives in a separate repository:
+
+```sh
+cd ~/agentdeck
+```
+
+AgentDeck uses SQLite as its primary store. Org files are compatibility boundaries: it can import `~/org/gtd/current.org` and `~/org/gtd/archive.org` when the SQLite database is empty, and it can export an Org backup.
 
 Run it manually with:
 
 ```sh
-cd ~/.config/doom/gtd-web
+cd ~/agentdeck
 npm start
 ```
 

@@ -1931,59 +1931,54 @@ setView((location.hash||\"#next\").slice(1),true);
             (save-buffer)
             (message "Archived %d completed GTD entries" (length markers)))))))))
 
-(defvar my/gtd-web-app-directory
-  (expand-file-name "gtd-web"
-                    (file-name-directory
-                     (or load-file-name
-                         (buffer-file-name)
-                         default-directory))))
-(defvar my/gtd-web-host "127.0.0.1")
-(defvar my/gtd-web-port 8787)
-(defvar my/gtd-web-process nil)
+(defvar my/agentdeck-app-directory (expand-file-name "~/agentdeck"))
+(defvar my/agentdeck-host "127.0.0.1")
+(defvar my/agentdeck-port 8787)
+(defvar my/agentdeck-process nil)
 
-(defun my/gtd-web-url ()
-  (format "http://%s:%d" my/gtd-web-host my/gtd-web-port))
+(defun my/agentdeck-url ()
+  (format "http://%s:%d" my/agentdeck-host my/agentdeck-port))
 
-(defun my/gtd-web-start ()
-  "Start the local JavaScript GTD web app."
+(defun my/agentdeck-start ()
+  "Start the local AgentDeck app."
   (interactive)
-  (unless (and my/gtd-web-process
-               (process-live-p my/gtd-web-process))
+  (unless (and my/agentdeck-process
+               (process-live-p my/agentdeck-process))
     (let ((node (or (executable-find "node")
-                    (user-error "Node.js is required for the GTD web app")))
-          (default-directory my/gtd-web-app-directory)
+                    (user-error "Node.js is required for AgentDeck")))
+          (default-directory my/agentdeck-app-directory)
           (process-environment
            (append
             (list
-             (format "GTD_HOST=%s" my/gtd-web-host)
-             (format "GTD_PORT=%d" my/gtd-web-port)
+             (format "GTD_HOST=%s" my/agentdeck-host)
+             (format "GTD_PORT=%d" my/agentdeck-port)
              (format "GTD_CURRENT_FILE=%s" (expand-file-name org-current-file))
              (format "GTD_ARCHIVE_FILE=%s" (expand-file-name org-archive-file))
              (format "GTD_REVIEW_DAYS=%d" my/gtd-review-days)
              (format "GTD_STALE_DAYS=%d" my/gtd-stale-days))
             process-environment)))
-      (unless (file-exists-p (expand-file-name "server.mjs" my/gtd-web-app-directory))
-        (user-error "Missing GTD web app server: %s" my/gtd-web-app-directory))
-      (setq my/gtd-web-process
-            (start-process "gtd-web" "*GTD Web*" node "server.mjs"))
-      (set-process-query-on-exit-flag my/gtd-web-process nil)))
-  (message "GTD web app running at %s" (my/gtd-web-url))
-  my/gtd-web-process)
+      (unless (file-exists-p (expand-file-name "server.mjs" my/agentdeck-app-directory))
+        (user-error "Missing AgentDeck server: %s" my/agentdeck-app-directory))
+      (setq my/agentdeck-process
+            (start-process "agentdeck" "*AgentDeck*" node "server.mjs"))
+      (set-process-query-on-exit-flag my/agentdeck-process nil)))
+  (message "AgentDeck running at %s" (my/agentdeck-url))
+  my/agentdeck-process)
 
-(defun my/gtd-web-open ()
-  "Start and open the local JavaScript GTD web app."
+(defun my/agentdeck-open ()
+  "Start and open the local AgentDeck app."
   (interactive)
-  (my/gtd-web-start)
-  (browse-url (my/gtd-web-url)))
+  (my/agentdeck-start)
+  (browse-url (my/agentdeck-url)))
 
-(defun my/gtd-web-stop ()
-  "Stop the local JavaScript GTD web app."
+(defun my/agentdeck-stop ()
+  "Stop the local AgentDeck app."
   (interactive)
-  (when (and my/gtd-web-process
-             (process-live-p my/gtd-web-process))
-    (delete-process my/gtd-web-process)
-    (setq my/gtd-web-process nil)
-    (message "GTD web app stopped")))
+  (when (and my/agentdeck-process
+             (process-live-p my/agentdeck-process))
+    (delete-process my/agentdeck-process)
+    (setq my/agentdeck-process nil)
+    (message "AgentDeck stopped")))
 
 ;;; === macOS ===
 
@@ -2052,8 +2047,8 @@ setView((location.hash||\"#next\").slice(1),true);
       :desc "View current work" "g w" (lambda () (interactive) (find-file org-current-file))
       :desc "View archive" "g v" (lambda () (interactive) (find-file org-archive-file))
       :desc "GTD dashboard" "g G" #'my/gtd-dashboard
-      :desc "Open GTD web app" "g h" #'my/gtd-web-open
-      :desc "Stop GTD web app" "g q" #'my/gtd-web-stop
+      :desc "Open AgentDeck" "g h" #'my/agentdeck-open
+      :desc "Stop AgentDeck" "g q" #'my/agentdeck-stop
       :desc "Export HTML dashboard" "g H" #'my/gtd-export-dashboard-html
       :desc "Next actions" "g n" #'my/gtd-next-actions
       :desc "Mark NEXT" "g N" #'my/gtd-mark-next-task
